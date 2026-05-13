@@ -21,6 +21,7 @@ type Candidate = {
   id: string;
   job_id: string;
   name: string;
+  email: string;
 };
 
 type Resume = {
@@ -73,7 +74,7 @@ export default async function DashboardPage() {
         </div>
       </section>
 
-      <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} candidates={candidates.map((c) => ({ id: c.id, name: c.name, job_id: c.job_id }))} />
+      <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} candidates={candidates.map((c) => ({ id: c.id, name: c.name, job_id: c.job_id, email: c.email }))} />
 
       <section className="glass mt-6 rounded-2xl p-8">
         <h2 className="text-2xl font-semibold">Uploaded Shortlisted Resumes</h2>

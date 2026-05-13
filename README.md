@@ -6,26 +6,24 @@ Production-grade AI Interview & Candidate Evaluation Platform for recruiters and
 
 ## 1) Database + Redis + Backend (single command)
 ```bash
-cp backend/.env.example backend/.env && docker compose up -d --build
+cd /home/kartikeyayadav/Desktop/kovidam-AI-Interview && docker compose up -d --build
 ```
 
-## 2) Verify backend is running (single command)
+## 2) Verify backend is running
 ```bash
 curl http://localhost:8000/api/v1/health/live && echo && curl http://localhost:8000/api/v1/health/ready
 ```
 
 ## 3) Frontend (single command)
 ```bash
-cd frontend && npm install && npm run dev
+cd /home/kartikeyayadav/Desktop/kovidam-AI-Interview/frontend && npm run dev:reset
 ```
 
 ## URLs
 - Frontend: `http://localhost:3000`
+- Dashboard: `http://localhost:3000/dashboard`
 - Backend API: `http://localhost:8000`
-- Health: `http://localhost:8000/api/v1/health/live`
 
-## Current Status
-- Backend FastAPI foundation with health endpoints
-- Frontend Next.js shell routes
-- Docker Compose for postgres + redis + backend
-- Production roadmap in `IMPLEMENTATION_PLAN.md`
+## Important
+- Do not keep re-copying `.env.example` into `.env` after you set real keys.
+- For interview mail, use a real candidate email (not `@example.com` or fake domains).

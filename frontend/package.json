@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --no-turbo",
+    "dev:reset": "rm -rf .next node_modules/.cache && next dev --no-turbo",
+    "dev:safe": "sh -c 'pkill -f \"next dev\" || true; rm -rf .next node_modules/.cache; next dev --no-turbo'",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

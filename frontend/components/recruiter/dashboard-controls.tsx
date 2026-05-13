@@ -3,7 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 
 type Job = { id: string; title: string };
-type Candidate = { id: string; name: string; job_id: string };
+type Candidate = { id: string; name: string; job_id: string; email?: string };
 
 const PRIMARY_API = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy/api/v1";
 const FALLBACK_API = "http://127.0.0.1:8000/api/v1";
@@ -24,6 +24,8 @@ export default function DashboardControls({ jobs, candidates }: { jobs: Job[]; c
   const [candidateJobId, setCandidateJobId] = useState(jobs[0]?.id || "");
   const [resumeCandidateId, setResumeCandidateId] = useState(candidates[0]?.id || "");
   const [resumeJobId, setResumeJobId] = useState(candidates[0]?.job_id || jobs[0]?.id || "");
+  const [mailCandidateId, setMailCandidateId] = useState(candidates[0]?.id || "");
+  const [mailJobId, setMailJobId] = useState(candidates[0]?.job_id || jobs[0]?.id || "");
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState("");
 
@@ -115,12 +117,36 @@ export default function DashboardControls({ jobs, candidates }: { jobs: Job[]; c
     }
   }
 
+  async function sendInterviewMail(e: FormEvent) {
+    e.preventDefault();
+    try {
+      if (!mailCandidateId || !mailJobId) {
+        setStatus("Select candidate and job for interview link.");
+        return;
+      }
+      setStatus("Sending interview mail...");
+      const res = await fetchWithFallback("/interviews/send-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_id: mailCandidateId, job_id: mailJobId }),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        setStatus(`Mail send failed (${res.status}): ${payload.detail || "unknown error"}`);
+        return;
+      }
+      setStatus(`Interview email sent. Link: ${payload.interview_link}`);
+    } catch (err) {
+      setStatus(`Mail send failed: ${(err as Error).message}`);
+    }
+  }
+
   return (
     <section className="glass mt-6 rounded-2xl p-8">
       <h2 className="text-2xl font-semibold">Recruiter Actions</h2>
-      <p className="mt-2 text-sm text-muted">Create job, add candidate, upload shortlisted resume (PDF/DOCX).</p>
+      <p className="mt-2 text-sm text-muted">Create job, add candidate, upload shortlisted resume, send interview mail.</p>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
+      <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-4">
         <form onSubmit={createJob} className="space-y-3 rounded-xl border border-muted/20 p-4">
           <p className="font-semibold">1. Create Job</p>
           <input className="w-full rounded bg-panel p-2" placeholder="Job title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} required />
@@ -144,7 +170,7 @@ export default function DashboardControls({ jobs, candidates }: { jobs: Job[]; c
           <p className="font-semibold">3. Upload Resume</p>
           <select className="w-full rounded bg-panel p-2" value={resumeCandidateId} onChange={(e) => setResumeCandidateId(e.target.value)} required>
             {candidates.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
+              <option key={c.id} value={c.id}>{`${c.name}${c.email ? ` (${c.email})` : ""}`}</option>
             ))}
           </select>
           <select className="w-full rounded bg-panel p-2" value={resumeJobId} onChange={(e) => setResumeJobId(e.target.value)} required>
@@ -152,20 +178,29 @@ export default function DashboardControls({ jobs, candidates }: { jobs: Job[]; c
               <option key={j.id} value={j.id}>{j.title}</option>
             ))}
           </select>
-          <input
-            className="w-full rounded bg-panel p-2"
-            type="file"
-            accept=".pdf,.docx"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            required
-          />
+          <input className="w-full rounded bg-panel p-2" type="file" accept=".pdf,.docx" onChange={(e) => setFile(e.target.files?.[0] || null)} required />
           <button disabled={!canUpload} className="rounded bg-accent px-3 py-2 text-black disabled:cursor-not-allowed disabled:opacity-50">
             Upload Resume
           </button>
         </form>
+
+        <form onSubmit={sendInterviewMail} className="space-y-3 rounded-xl border border-muted/20 p-4">
+          <p className="font-semibold">4. Send Interview Mail</p>
+          <select className="w-full rounded bg-panel p-2" value={mailCandidateId} onChange={(e) => setMailCandidateId(e.target.value)} required>
+            {candidates.map((c) => (
+              <option key={c.id} value={c.id}>{`${c.name}${c.email ? ` (${c.email})` : ""}`}</option>
+            ))}
+          </select>
+          <select className="w-full rounded bg-panel p-2" value={mailJobId} onChange={(e) => setMailJobId(e.target.value)} required>
+            {jobs.map((j) => (
+              <option key={j.id} value={j.id}>{j.title}</option>
+            ))}
+          </select>
+          <button className="rounded bg-accent px-3 py-2 text-black">Send Invite</button>
+        </form>
       </div>
 
-      {status ? <p className="mt-4 text-sm text-muted">{status}</p> : null}
+      {status ? <p className="mt-4 text-sm text-muted break-all">{status}</p> : null}
     </section>
   );
 }

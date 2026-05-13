@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DataError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.entities import Candidate, InterviewSession, Job, Resume
 from app.schemas.recruiter import (
@@ -15,11 +16,15 @@ from app.schemas.recruiter import (
     CandidateOut,
     DashboardStats,
     InterviewCreate,
+    InterviewDetail,
     InterviewOut,
     JobCreate,
     JobOut,
     ResumeOut,
+    SendInterviewLinkRequest,
+    SendInterviewLinkResponse,
 )
+from app.services.email_service import send_interview_email
 from app.services.resume_parser import (
     ensure_upload_dir,
     extract_email,
@@ -31,6 +36,26 @@ from app.services.resume_parser import (
 
 router = APIRouter(tags=["recruiter"])
 UPLOAD_DIR = ensure_upload_dir("/app/uploads")
+
+
+BLOCKED_EMAIL_DOMAINS = {"example.com", "test.com", "invalid", "localhost"}
+
+
+def is_deliverable_email(email: str) -> bool:
+    if "@" not in email:
+        return False
+    domain = email.split("@")[-1].strip().lower()
+    return domain not in BLOCKED_EMAIL_DOMAINS
+
+
+def validate_recipient_email(email: str) -> None:
+    domain = email.split("@")[-1].strip().lower() if "@" in email else ""
+    if domain in BLOCKED_EMAIL_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Recipient domain '{domain}' is not deliverable. Use a real email address.",
+        )
+
 
 
 @router.post("/jobs", response_model=JobOut)
@@ -53,6 +78,8 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
     job_exists = db.execute(select(Job.id).where(Job.id == payload.job_id)).first()
     if not job_exists:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    validate_recipient_email(payload.email)
 
     candidate = Candidate(**payload.model_dump())
     db.add(candidate)
@@ -90,6 +117,82 @@ def list_interviews(db: Session = Depends(get_db)):
     return list(interviews)
 
 
+@router.get("/interviews/{interview_id}", response_model=InterviewDetail)
+def get_interview(interview_id: UUID, db: Session = Depends(get_db)):
+    row = db.execute(
+        select(InterviewSession, Candidate, Job)
+        .join(Candidate, Candidate.id == InterviewSession.candidate_id)
+        .join(Job, Job.id == InterviewSession.job_id)
+        .where(InterviewSession.id == interview_id)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    interview, candidate, job = row
+    return InterviewDetail(
+        id=interview.id,
+        candidate_id=candidate.id,
+        candidate_name=candidate.name,
+        candidate_email=candidate.email,
+        job_id=job.id,
+        job_title=job.title,
+        status=interview.status,
+        integrity_score=interview.integrity_score,
+    )
+
+
+@router.post("/interviews/send-link", response_model=SendInterviewLinkResponse)
+def send_interview_link(payload: SendInterviewLinkRequest, db: Session = Depends(get_db)):
+    row = db.execute(
+        select(Candidate, Job)
+        .join(Job, Job.id == Candidate.job_id)
+        .where(Candidate.id == payload.candidate_id)
+        .where(Job.id == payload.job_id)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidate/job combination not found")
+
+    candidate, job = row
+
+    target_email = candidate.email
+    if not is_deliverable_email(target_email):
+        latest_resume = db.execute(
+            select(Resume).where(Resume.candidate_id == candidate.id).order_by(Resume.created_at.desc())
+        ).scalars().first()
+        if latest_resume and latest_resume.extracted_email and is_deliverable_email(latest_resume.extracted_email):
+            target_email = latest_resume.extracted_email
+            candidate.email = target_email
+            db.commit()
+        else:
+            validate_recipient_email(target_email)
+
+    interview = InterviewSession(candidate_id=candidate.id, job_id=job.id, status="scheduled")
+    db.add(interview)
+    db.commit()
+    db.refresh(interview)
+
+    settings = get_settings()
+    interview_link = f"{settings.frontend_base_url}/candidate/interview/{interview.id}"
+
+    try:
+        send_interview_email(
+            to_email=target_email,
+            candidate_name=candidate.name,
+            job_title=job.title,
+            interview_link=interview_link,
+        )
+    except Exception as exc:
+        db.delete(interview)
+        db.commit()
+        raise HTTPException(status_code=400, detail=f"Mail send failed: {exc}")
+
+    return SendInterviewLinkResponse(
+        interview_id=interview.id,
+        interview_link=interview_link,
+        email_sent=True,
+    )
+
+
 @router.post("/resumes/upload", response_model=ResumeOut)
 def upload_resume(
     candidate_id: UUID = Form(...),
@@ -122,6 +225,10 @@ def upload_resume(
     extracted_email = extract_email(text)
     extracted_phone = extract_phone(text)
     extracted_skills = extract_skills(text)
+
+    candidate_obj = db.execute(select(Candidate).where(Candidate.id == candidate_id)).scalar_one()
+    if extracted_email and (not is_deliverable_email(candidate_obj.email)) and is_deliverable_email(extracted_email):
+        candidate_obj.email = extracted_email
 
     resume = Resume(
         candidate_id=candidate_id,

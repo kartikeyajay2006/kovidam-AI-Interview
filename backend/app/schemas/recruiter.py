@@ -57,6 +57,28 @@ class InterviewOut(BaseModel):
     integrity_score: float
 
 
+class InterviewDetail(BaseModel):
+    id: UUID
+    candidate_id: UUID
+    candidate_name: str
+    candidate_email: str
+    job_id: UUID
+    job_title: str
+    status: str
+    integrity_score: float
+
+
+class SendInterviewLinkRequest(BaseModel):
+    candidate_id: UUID
+    job_id: UUID
+
+
+class SendInterviewLinkResponse(BaseModel):
+    interview_id: UUID
+    interview_link: str
+    email_sent: bool
+
+
 class ResumeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
