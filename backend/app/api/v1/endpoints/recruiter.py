@@ -197,6 +197,18 @@ def start_interview(interview_id: UUID, db: Session = Depends(get_db)):
     return interview
 
 
+@router.post("/interviews/{interview_id}/end", response_model=InterviewOut)
+def end_interview(interview_id: UUID, db: Session = Depends(get_db)):
+    interview = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    interview.status = "completed"
+    db.commit()
+    db.refresh(interview)
+    return interview
+
+
 @router.post("/interviews/{interview_id}/next-question", response_model=InterviewQuestionResponse)
 def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db: Session = Depends(get_db)):
     row = db.execute(

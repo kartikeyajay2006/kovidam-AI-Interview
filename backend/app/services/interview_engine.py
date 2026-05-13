@@ -6,22 +6,57 @@ import httpx
 from app.core.config import get_settings
 
 
-def _fallback_question(role_title: str, resume_skills: str, history_len: int) -> tuple[str, str]:
+def _extract_resume_highlights(resume_text: str) -> list[str]:
+    lines = [line.strip(" -\t") for line in (resume_text or "").splitlines()]
+    cleaned = [line for line in lines if 20 <= len(line) <= 180]
+    return cleaned[:6]
+
+
+def _fallback_question(
+    role_title: str,
+    resume_skills: str,
+    resume_text: str,
+    history: list[dict],
+) -> tuple[str, str]:
     skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
-    key_skill = skills[min(history_len, len(skills) - 1)] if skills else "your most important project"
-    if history_len == 0:
+    highlights = _extract_resume_highlights(resume_text)
+    last_candidate_answer = ""
+    for turn in reversed(history):
+        if turn.get("role") == "candidate" and turn.get("content"):
+            last_candidate_answer = turn["content"][:240]
+            break
+
+    if not history:
+        if highlights:
+            return (
+                f"Your resume mentions: '{highlights[0]}'. Can you walk me through your exact contribution and impact?",
+                "Resume-grounded opening question.",
+            )
+        if skills:
+            return (
+                f"Pick one project where you used {skills[0]} and explain architecture, scale, and one production issue.",
+                "Skill-grounded opening question.",
+            )
         return (
-            f"Let's start with your background. Tell me about a project where you used {key_skill} in production.",
-            "Opening resume-based technical depth question.",
+            f"For the {role_title} role, describe your strongest project and the toughest technical challenge you solved.",
+            "General opening question.",
         )
-    if history_len == 1:
+
+    if last_candidate_answer:
         return (
-            f"What was the hardest engineering trade-off you handled while working on {key_skill}?",
-            "Follow-up to evaluate problem-solving depth.",
+            f"You mentioned '{last_candidate_answer}'. What trade-off did you choose, and what alternative did you reject?",
+            "Adaptive follow-up based on candidate answer.",
         )
+
+    if len(skills) > 1:
+        return (
+            f"How did you combine {skills[0]} with {skills[1]} in a real production workflow, and what bottleneck appeared?",
+            "Cross-skill depth follow-up.",
+        )
+
     return (
-        f"For the {role_title} role, what would you improve in that project if you had two more weeks?",
-        "Assesses ownership and optimization mindset.",
+        f"If you had to redesign your most recent system for 10x traffic, what would you change first and why?",
+        "System design pressure follow-up.",
     )
 
 
@@ -46,17 +81,22 @@ def generate_interview_question(
     cleaned_history = _trim_history(history)
 
     if not settings.groq_api_key:
-        return _fallback_question(role_title, resume_skills, len(cleaned_history))
+        return _fallback_question(role_title, resume_skills, resume_text, cleaned_history)
 
     prompt = {
         "role_title": role_title,
         "resume_skills": resume_skills,
-        "resume_excerpt": (resume_text or "")[:3000],
+        "resume_excerpt": (resume_text or "")[:5000],
         "history": cleaned_history,
         "instruction": (
-            "You are a senior interviewer. Ask exactly one concise spoken question, based on resume and prior answer. "
-            "If candidate answer seems vague, ask deeper technical follow-up. "
-            "Return strict JSON: {\"question\":\"...\", \"rationale\":\"...\"}."
+            "You are a senior interviewer in a live voice interview.\n"
+            "Requirements:\n"
+            "1) Ask exactly one strong, non-generic question.\n"
+            "2) The question must be grounded in resume details or candidate's last answer.\n"
+            "3) Force depth: ask about architecture, trade-offs, scale, failure, debugging, or production impact.\n"
+            "4) Avoid yes/no questions and avoid repeating prior questions.\n"
+            "5) Keep it concise and spoken-friendly (max 35 words).\n"
+            "Return strict JSON only: {\"question\":\"...\", \"rationale\":\"...\"}."
         ),
     }
 
@@ -69,8 +109,8 @@ def generate_interview_question(
             },
             {"role": "user", "content": json.dumps(prompt)},
         ],
-        "temperature": 0.4,
-        "max_tokens": 220,
+        "temperature": 0.25,
+        "max_tokens": 260,
         "response_format": {"type": "json_object"},
     }
 
@@ -95,7 +135,7 @@ def generate_interview_question(
     except Exception:
         pass
 
-    return _fallback_question(role_title, resume_skills, len(cleaned_history))
+    return _fallback_question(role_title, resume_skills, resume_text, cleaned_history)
 
 
 def analyze_candidate_answer(answer: str, role_title: str) -> tuple[str, float]:
