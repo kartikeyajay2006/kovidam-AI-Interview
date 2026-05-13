@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
 
     frontend_base_url: str = Field(default="http://localhost:3000", alias="FRONTEND_BASE_URL")
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    groq_model: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL")
 
 
 @lru_cache(maxsize=1)

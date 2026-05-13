@@ -57,3 +57,17 @@ class Resume(Base):
     extracted_phone: Mapped[str] = mapped_column(String(64), default="")
     extracted_skills: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class InterviewTurnLog(Base):
+    __tablename__ = "interview_turn_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interview_sessions.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)  # assistant | candidate
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis: Mapped[str] = mapped_column(Text, default="")
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

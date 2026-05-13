@@ -107,3 +107,33 @@ class DashboardStats(BaseModel):
     total_interviews: int
     in_progress_interviews: int
     completed_interviews: int
+
+
+class InterviewTurn(BaseModel):
+    role: str
+    content: str
+
+
+class InterviewQuestionRequest(BaseModel):
+    history: list[InterviewTurn] = []
+
+
+class InterviewQuestionResponse(BaseModel):
+    question: str
+    rationale: str
+
+
+class InterviewTurnCreate(BaseModel):
+    role: str
+    content: str
+
+
+class InterviewTurnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    interview_id: UUID
+    role: str
+    content: str
+    analysis: str
+    score: float

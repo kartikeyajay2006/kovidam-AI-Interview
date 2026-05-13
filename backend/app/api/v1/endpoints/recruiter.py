@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.entities import Candidate, InterviewSession, Job, Resume
+from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, Job, Resume
 from app.schemas.recruiter import (
     BulkInviteResponse,
     CandidateCreate,
@@ -18,6 +18,11 @@ from app.schemas.recruiter import (
     DashboardStats,
     InterviewCreate,
     InterviewDetail,
+    InterviewQuestionRequest,
+    InterviewQuestionResponse,
+    InterviewTurnCreate,
+    InterviewTurnOut,
+    InterviewTurn,
     InterviewOut,
     JobCreate,
     JobOut,
@@ -26,6 +31,7 @@ from app.schemas.recruiter import (
     SendInterviewLinkResponse,
 )
 from app.services.email_service import send_interview_email
+from app.services.interview_engine import analyze_candidate_answer, generate_interview_question
 from app.services.resume_parser import (
     ensure_upload_dir,
     extract_email,
@@ -189,6 +195,95 @@ def start_interview(interview_id: UUID, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(interview)
     return interview
+
+
+@router.post("/interviews/{interview_id}/next-question", response_model=InterviewQuestionResponse)
+def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db: Session = Depends(get_db)):
+    row = db.execute(
+        select(InterviewSession, Candidate, Job)
+        .join(Candidate, Candidate.id == InterviewSession.candidate_id)
+        .join(Job, Job.id == InterviewSession.job_id)
+        .where(InterviewSession.id == interview_id)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    interview, candidate, job = row
+    if interview.status == "scheduled":
+        interview.status = "in_progress"
+        db.commit()
+
+    latest_resume = db.execute(
+        select(Resume).where(Resume.candidate_id == candidate.id).order_by(Resume.created_at.desc())
+    ).scalars().first()
+
+    stored_turns = db.execute(
+        select(InterviewTurnLog)
+        .where(InterviewTurnLog.interview_id == interview_id)
+        .order_by(InterviewTurnLog.created_at.asc())
+    ).scalars().all()
+    stored_history = [{"role": t.role, "content": t.content} for t in stored_turns]
+    payload_history = [InterviewTurn(role=t.role, content=t.content).model_dump() for t in payload.history]
+    merged_history = stored_history if stored_history else payload_history
+
+    question, rationale = generate_interview_question(
+        role_title=job.title,
+        resume_text=latest_resume.extracted_text if latest_resume else "",
+        resume_skills=latest_resume.extracted_skills if latest_resume else candidate.skills,
+        history=merged_history,
+    )
+
+    db.add(
+        InterviewTurnLog(
+            interview_id=interview_id,
+            role="assistant",
+            content=question,
+            analysis=rationale,
+            score=0.0,
+        )
+    )
+    db.commit()
+
+    return InterviewQuestionResponse(question=question, rationale=rationale)
+
+
+@router.get("/interviews/{interview_id}/turns", response_model=list[InterviewTurnOut])
+def list_interview_turns(interview_id: UUID, db: Session = Depends(get_db)):
+    turns = db.execute(
+        select(InterviewTurnLog)
+        .where(InterviewTurnLog.interview_id == interview_id)
+        .order_by(InterviewTurnLog.created_at.asc())
+    ).scalars().all()
+    return list(turns)
+
+
+@router.post("/interviews/{interview_id}/turns", response_model=InterviewTurnOut)
+def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Session = Depends(get_db)):
+    interview_row = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
+    if not interview_row:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    role = payload.role.strip().lower()
+    if role not in {"assistant", "candidate"}:
+        raise HTTPException(status_code=400, detail="Role must be assistant or candidate")
+
+    analysis = ""
+    score = 0.0
+    if role == "candidate":
+        job = db.execute(select(Job).where(Job.id == interview_row.job_id)).scalars().first()
+        analysis, score = analyze_candidate_answer(payload.content, job.title if job else "Software Engineer")
+
+    turn = InterviewTurnLog(
+        interview_id=interview_id,
+        role=role,
+        content=payload.content,
+        analysis=analysis,
+        score=score,
+    )
+    db.add(turn)
+    db.commit()
+    db.refresh(turn)
+    return turn
 
 
 @router.post("/interviews/send-link", response_model=SendInterviewLinkResponse)
