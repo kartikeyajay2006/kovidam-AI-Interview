@@ -1,0 +1,36 @@
+# Node
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env.local
+
+# Logs
+*.log
+logs/
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Build outputs
+build/
+dist/
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
