@@ -17,13 +17,6 @@ type Job = {
   duration_minutes: number;
 };
 
-type Candidate = {
-  id: string;
-  job_id: string;
-  name: string;
-  email: string;
-};
-
 type Resume = {
   id: string;
   file_name: string;
@@ -44,12 +37,6 @@ async function getJobs(): Promise<Job[]> {
   return res.json();
 }
 
-async function getCandidates(): Promise<Candidate[]> {
-  const res = await fetch("http://localhost:8000/api/v1/candidates", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to load candidates");
-  return res.json();
-}
-
 async function getResumes(): Promise<Resume[]> {
   const res = await fetch("http://localhost:8000/api/v1/resumes", { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load resumes");
@@ -57,7 +44,7 @@ async function getResumes(): Promise<Resume[]> {
 }
 
 export default async function DashboardPage() {
-  const [stats, jobs, candidates, resumes] = await Promise.all([getStats(), getJobs(), getCandidates(), getResumes()]);
+  const [stats, jobs, resumes] = await Promise.all([getStats(), getJobs(), getResumes()]);
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl p-6">
@@ -74,7 +61,7 @@ export default async function DashboardPage() {
         </div>
       </section>
 
-      <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} candidates={candidates.map((c) => ({ id: c.id, name: c.name, job_id: c.job_id, email: c.email }))} />
+      <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} />
 
       <section className="glass mt-6 rounded-2xl p-8">
         <h2 className="text-2xl font-semibold">Uploaded Shortlisted Resumes</h2>

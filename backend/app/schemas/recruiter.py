@@ -79,6 +79,14 @@ class SendInterviewLinkResponse(BaseModel):
     email_sent: bool
 
 
+class BulkInviteResponse(BaseModel):
+    job_id: UUID
+    attempted: int
+    sent: int
+    failed: int
+    failures: list[str]
+
+
 class ResumeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
