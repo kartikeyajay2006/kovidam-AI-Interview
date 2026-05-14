@@ -39,11 +39,13 @@ from app.services.resume_parser import (
     extract_phone,
     extract_skills,
     extract_text,
+    save_parsed_resume,
     sanitize_text,
 )
 
 router = APIRouter(tags=["recruiter"])
 UPLOAD_DIR = ensure_upload_dir("/app/uploads")
+PARSED_RESUME_DIR = ensure_upload_dir("/app/resume_parsed")
 
 BLOCKED_EMAIL_DOMAINS = {"example.com", "test.com", "invalid", "localhost"}
 
@@ -425,6 +427,16 @@ def upload_resume_and_register(
         extracted_skills=extracted_skills,
     )
     db.add(resume)
+    save_parsed_resume(
+        parsed_dir=PARSED_RESUME_DIR,
+        source_file_name=file.filename,
+        source_file_path=str(saved_path),
+        candidate_name=extracted_name,
+        extracted_email=extracted_email,
+        extracted_phone=extracted_phone,
+        extracted_skills=extracted_skills,
+        extracted_text=text,
+    )
 
     try:
         db.commit()
@@ -489,6 +501,16 @@ def upload_resume(
         extracted_skills=extracted_skills,
     )
     db.add(resume)
+    save_parsed_resume(
+        parsed_dir=PARSED_RESUME_DIR,
+        source_file_name=file.filename,
+        source_file_path=str(saved_path),
+        candidate_name=cand.name,
+        extracted_email=extracted_email,
+        extracted_phone=extracted_phone,
+        extracted_skills=extracted_skills,
+        extracted_text=text,
+    )
     try:
         db.commit()
     except DataError:

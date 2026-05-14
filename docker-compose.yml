@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    container_name: kovidam-postgres
     environment:
       POSTGRES_DB: kovidam
       POSTGRES_USER: postgres
@@ -9,27 +10,42 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kovidam"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7
+    container_name: kovidam-redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   backend:
     build:
       context: ./backend
+    container_name: kovidam-backend
     env_file:
       - ./backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/kovidam
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@kovidam-postgres:5432/kovidam
+      REDIS_URL: redis://kovidam-redis:6379/0
     ports:
       - "8000:8000"
     volumes:
       - backend_uploads:/app/uploads
+      - ./backend/resume_parsed:/app/resume_parsed
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   pgdata:

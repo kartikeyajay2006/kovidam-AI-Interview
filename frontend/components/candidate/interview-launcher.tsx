@@ -37,6 +37,7 @@ export default function InterviewLauncher({
   jobTitle,
   sessionId,
 }: Props) {
+  const [mounted, setMounted] = useState(false);
   const [status, setStatus] = useState(initialStatus);
   const [checkState, setCheckState] = useState<CheckState>("idle");
   const [message, setMessage] = useState("");
@@ -52,6 +53,7 @@ export default function InterviewLauncher({
   const [cameraOn, setCameraOn] = useState(false);
   const [micOn, setMicOn] = useState(false);
   const [sharingScreen, setSharingScreen] = useState(false);
+  const [warningCount, setWarningCount] = useState(0);
   const [showQuestionDetails, setShowQuestionDetails] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const noSpeechRetryRef = useRef(0);
@@ -60,7 +62,19 @@ export default function InterviewLauncher({
   const userStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
 
-  const canStart = useMemo(() => checkState === "passed" && status !== "completed", [checkState, status]);
+  const complianceOk = useMemo(() => cameraOn && micOn && sharingScreen, [cameraOn, micOn, sharingScreen]);
+  const canStart = useMemo(
+    () => (checkState === "passed" || complianceOk) && complianceOk && status !== "completed",
+    [checkState, complianceOk, status]
+  );
+  const startBlockReason = useMemo(() => {
+    if (status === "completed") return "Interview already completed.";
+    if (checkState !== "passed" && !complianceOk) return "Run 'Check Devices' and grant permissions first.";
+    if (!cameraOn) return "Camera is required.";
+    if (!micOn) return "Microphone is required.";
+    if (!sharingScreen) return "Screen sharing is required.";
+    return "";
+  }, [status, checkState, cameraOn, micOn, sharingScreen]);
   const currentQuestion = useMemo(
     () => [...history].reverse().find((t) => t.role === "assistant")?.content || "AI is preparing your next question...",
     [history]
@@ -69,6 +83,10 @@ export default function InterviewLauncher({
     const candidateTurns = history.filter((t) => t.role === "candidate").length;
     return Math.min(100, Math.round((candidateTurns / 10) * 100));
   }, [history]);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     listeningRef.current = listening;
@@ -98,6 +116,20 @@ export default function InterviewLauncher({
     const id = window.setInterval(() => setElapsedSec((v) => v + 1), 1000);
     return () => window.clearInterval(id);
   }, [status]);
+
+  useEffect(() => {
+    if (status !== "in_progress") return;
+    if (complianceOk) return;
+    const nextWarnings = warningCount + 1;
+    setWarningCount(nextWarnings);
+    stopListening();
+    if (nextWarnings >= 3) {
+      setMessage("Final warning exceeded. Interview is ending due to disabled required devices.");
+      void endInterview();
+      return;
+    }
+    setMessage(`Warning ${nextWarnings}/3: mic, camera, and screen share must stay ON. Re-enable immediately.`);
+  }, [status, complianceOk, warningCount]);
 
   useEffect(() => {
     return () => {
@@ -208,19 +240,53 @@ export default function InterviewLauncher({
         setMessage("Browser does not support camera/microphone check.");
         return;
       }
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      const mediaDevicesWithShare = navigator.mediaDevices as MediaDevices & {
+        getDisplayMedia?: (constraints?: MediaStreamConstraints) => Promise<MediaStream>;
+      };
+      if (!mediaDevicesWithShare.getDisplayMedia) {
+        setCheckState("failed");
+        setMessage("Screen share is not supported in this browser.");
+        return;
+      }
+
+      const camMicStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      userStreamRef.current?.getTracks().forEach((t) => t.stop());
+      userStreamRef.current = camMicStream;
+      if (userVideoRef.current) userVideoRef.current.srcObject = camMicStream;
+      camMicStream.getVideoTracks().forEach((track) => {
+        track.onended = () => setCameraOn(false);
+      });
+      camMicStream.getAudioTracks().forEach((track) => {
+        track.onended = () => setMicOn(false);
+      });
+
+      const displayStream = await mediaDevicesWithShare.getDisplayMedia({ video: true, audio: false });
+      screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = displayStream;
+      displayStream.getVideoTracks().forEach((track) => {
+        track.onended = () => {
+          setSharingScreen(false);
+          screenStreamRef.current = null;
+        };
+      });
+
       setCheckState("passed");
+      setWarningCount(0);
       setCameraOn(true);
       setMicOn(true);
-      setMessage("Camera and microphone are ready.");
+      setSharingScreen(true);
+      setMessage("Camera, microphone, and screen sharing are active.");
     } catch {
       setCheckState("failed");
-      setMessage("Permission denied. Please allow camera/microphone and retry.");
+      setMessage("Permission denied. Please allow mic, camera, and screen sharing.");
     }
   }
 
   async function startInterview() {
+    if (!complianceOk) {
+      setMessage("Cannot start: mic, camera, and screen sharing are compulsory.");
+      return;
+    }
     try {
       setMessage("Starting interview session...");
       const res = await fetch(`${API}/interviews/${interviewId}/start`, { method: "POST" });
@@ -322,12 +388,16 @@ export default function InterviewLauncher({
         setMessage("No camera track available.");
         return;
       }
-      const next = !tracks[0].enabled;
+      const isActive = tracks.some((t) => t.enabled);
+      if (isActive) {
+        setMessage("Camera is mandatory and cannot be turned off during interview.");
+        return;
+      }
       tracks.forEach((t) => {
-        t.enabled = next;
+        t.enabled = true;
       });
-      setCameraOn(next);
-      setMessage(next ? "Camera enabled." : "Camera disabled.");
+      setCameraOn(true);
+      setMessage("Camera enabled.");
     } catch {
       setMessage("Unable to access camera.");
     }
@@ -341,14 +411,17 @@ export default function InterviewLauncher({
         setMessage("No microphone track available.");
         return;
       }
-      const next = !tracks[0].enabled;
+      const isActive = tracks.some((t) => t.enabled);
+      if (isActive) {
+        setMessage("Microphone is mandatory and cannot be turned off during interview.");
+        return;
+      }
       tracks.forEach((t) => {
-        t.enabled = next;
+        t.enabled = true;
       });
-      setMicOn(next);
-      if (!next && listening) stopListening();
-      if (next && status === "in_progress" && !listening) startListening();
-      setMessage(next ? "Microphone enabled." : "Microphone disabled.");
+      setMicOn(true);
+      if (status === "in_progress" && !listening) startListening();
+      setMessage("Microphone enabled.");
     } catch {
       setMessage("Unable to access microphone.");
     }
@@ -356,10 +429,7 @@ export default function InterviewLauncher({
 
   async function toggleScreenShare() {
     if (sharingScreen) {
-      screenStreamRef.current?.getTracks().forEach((t) => t.stop());
-      screenStreamRef.current = null;
-      setSharingScreen(false);
-      setMessage("Screen sharing stopped.");
+      setMessage("Screen sharing is mandatory and cannot be stopped during interview.");
       return;
     }
     try {
@@ -421,6 +491,14 @@ export default function InterviewLauncher({
     };
     const target = document.getElementById(idMap[section]);
     if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  if (!mounted) {
+    return (
+      <main className="mx-auto min-h-screen max-w-[1750px] p-5 md:p-6">
+        <section className="glass rounded-2xl p-6 text-sm text-muted">Loading interview session...</section>
+      </main>
+    );
   }
 
   return (
@@ -590,8 +668,9 @@ export default function InterviewLauncher({
               <div className="glass rounded-2xl p-5">
                 <h3 className="text-2xl font-semibold">Readiness Checklist</h3>
                 <ul className="mt-4 space-y-2 text-sm text-muted">
-                  <li>Camera: Active</li>
-                  <li>Microphone: Active</li>
+                  <li>Camera: {cameraOn ? "Active" : "Inactive"}</li>
+                  <li>Microphone: {micOn ? "Active" : "Inactive"}</li>
+                  <li>Screen Share: {sharingScreen ? "Active" : "Inactive"}</li>
                   <li>Internet: Stable</li>
                   <li>No Tab Switching</li>
                   <li>Environment: Good</li>
@@ -667,6 +746,10 @@ export default function InterviewLauncher({
                 <p className="mt-1 text-xs text-muted">
                   Role: {jobTitle} • Status: {status}
                 </p>
+                {!canStart ? <p className="mt-2 text-xs text-amber-300">{startBlockReason}</p> : null}
+                {warningCount > 0 && status === "in_progress" ? (
+                  <p className="mt-1 text-xs text-rose-300">Compliance warnings: {warningCount}/3</p>
+                ) : null}
               </div>
             </div>
           </div>
