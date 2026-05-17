@@ -495,22 +495,22 @@ export default function InterviewLauncher({
 
   if (!mounted) {
     return (
-      <main className="mx-auto min-h-screen max-w-[1750px] p-5 md:p-6">
-        <section className="glass rounded-2xl p-6 text-sm text-muted">Loading interview session...</section>
+      <main className="mx-auto min-h-screen max-w-[1750px] bg-[#f3f8fa] p-5 md:p-6">
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">Loading interview session...</section>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-[1750px] p-5 md:p-6">
+    <main className="mx-auto min-h-screen max-w-[1750px] bg-[#f3f8fa] p-5 md:p-6">
       <div className="grid grid-cols-[56px_1fr] gap-4 md:gap-6">
-        <aside className="glass flex flex-col items-center rounded-2xl py-4">
+        <aside className="flex flex-col items-center rounded-2xl border border-slate-200 bg-white py-4 shadow-sm">
           <div className="mb-5 h-9 w-9 rounded-xl bg-gradient-to-br from-accent to-accent2" />
           {NAV_ITEMS.map((item, idx) => (
             <button
               key={item}
               onClick={() => goToSection(item)}
-              className={`mb-3 h-10 w-10 rounded-xl text-xs ring-1 ring-muted/20 transition hover:ring-accent/60 ${navActive === item ? "bg-gradient-to-br from-[#3f2f6a] to-[#16214a] text-accent" : "bg-panel/60 text-muted"}`}
+              className={`mb-3 h-10 w-10 rounded-xl text-xs ring-1 transition ${navActive === item ? "bg-gradient-to-br from-teal-600 to-cyan-500 text-white ring-teal-400/60" : "bg-slate-100 text-slate-500 ring-slate-200 hover:ring-teal-300"}`}
               title={item}
             >
               {idx + 1}
@@ -520,21 +520,21 @@ export default function InterviewLauncher({
         </aside>
 
         <section className="space-y-4 md:space-y-6">
-          <header id="topbar" className="glass rounded-2xl p-4 md:p-5">
+          <header id="topbar" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
             <div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-muted">Kovidam AI Interview</p>
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Kovidam AI Interview</p>
                 <div className="mt-2 flex items-center gap-3">
-                  <h1 className="text-3xl font-semibold">AI Interview Session</h1>
-                  <span className="rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2 py-1 text-sm text-emerald-200">
+                  <h1 className="text-3xl font-semibold text-slate-900">AI Interview Session</h1>
+                  <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-sm text-emerald-700">
                     Live
                   </span>
                 </div>
-                <p className="mt-2 text-sm text-muted">Session ID: {sessionId}</p>
+                <p className="mt-2 text-sm text-slate-500">Session ID: {sessionId}</p>
               </div>
-              <div className="rounded-xl border border-muted/20 bg-panel/55 px-4 py-3 text-sm">
-                <p className="text-xs uppercase tracking-[0.15em] text-muted">Environment</p>
-                <p className="mt-1">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                <p className="text-xs uppercase tracking-[0.15em] text-slate-400">Environment</p>
+                <p className="mt-1 font-medium">
                   {cameraOn ? "Webcam" : "Webcam Off"} + {micOn ? "Mic" : "Mic Off"} +{" "}
                   {internetOnline ? "Stable Internet" : "Internet Unstable"}
                 </p>
@@ -552,8 +552,8 @@ export default function InterviewLauncher({
 
           <div id="studio" className="grid grid-cols-1 gap-4 xl:grid-cols-[330px_1fr_330px]">
             <div className="space-y-4">
-              <div id="transcript" className="glass rounded-2xl p-5">
-                <h3 className="text-2xl font-semibold">Interview Progress</h3>
+              <div id="transcript" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-2xl font-semibold text-slate-900">Interview Progress</h3>
                 <div className="mt-5 space-y-4">
                   {[
                     { label: "Introduction", pct: Math.min(100, progress + 15) },
@@ -564,9 +564,9 @@ export default function InterviewLauncher({
                     <div key={step.label}>
                       <div className="flex items-center justify-between text-sm">
                         <p>{step.label}</p>
-                        <p className="text-muted">{step.pct}%</p>
+                        <p className="text-slate-400">{step.pct}%</p>
                       </div>
-                      <div className="mt-2 h-2 rounded-full bg-panel/80">
+                      <div className="mt-2 h-2 rounded-full bg-slate-200">
                         <div
                           className="h-2 rounded-full bg-gradient-to-r from-[#8a5bff] to-[#45d5ff]"
                           style={{ width: `${step.pct}%` }}
@@ -577,24 +577,24 @@ export default function InterviewLauncher({
                 </div>
               </div>
 
-              <div className="glass rounded-2xl p-5">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-2xl font-semibold">Live Transcript</h3>
-                  <span className="text-xs text-muted">Auto-scroll</span>
+                  <h3 className="text-2xl font-semibold text-slate-900">Live Transcript</h3>
+                  <span className="text-xs text-slate-400">Auto-scroll</span>
                 </div>
                 <div className="max-h-[440px] space-y-3 overflow-auto pr-1">
                   {history.length === 0 ? (
-                    <p className="text-sm text-muted">Conversation will appear here when interview starts.</p>
+                    <p className="text-sm text-slate-500">Conversation will appear here when interview starts.</p>
                   ) : (
                     history.map((turn, idx) => (
                       <div
                         key={`${turn.role}-${idx}`}
-                        className={`rounded-xl border p-3 text-sm ${turn.role === "assistant" ? "border-violet-400/30 bg-violet-500/10" : "border-emerald-400/30 bg-emerald-500/10"}`}
+                        className={`rounded-xl border p-3 text-sm ${turn.role === "assistant" ? "border-cyan-200 bg-cyan-50" : "border-emerald-200 bg-emerald-50"}`}
                       >
-                        <p className={`mb-1 text-xs font-semibold uppercase tracking-[0.1em] ${turn.role === "assistant" ? "text-violet-200" : "text-emerald-200"}`}>
+                        <p className={`mb-1 text-xs font-semibold uppercase tracking-[0.1em] ${turn.role === "assistant" ? "text-cyan-700" : "text-emerald-700"}`}>
                           {turn.role === "assistant" ? "AI Interviewer" : "Candidate"}
                         </p>
-                        <p className="text-[#dbe7ff]">{turn.content}</p>
+                        <p className="text-slate-700">{turn.content}</p>
                       </div>
                     ))
                   )}
@@ -665,9 +665,9 @@ export default function InterviewLauncher({
             </div>
 
             <div className="space-y-4">
-              <div className="glass rounded-2xl p-5">
-                <h3 className="text-2xl font-semibold">Readiness Checklist</h3>
-                <ul className="mt-4 space-y-2 text-sm text-muted">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-2xl font-semibold text-slate-900">Readiness Checklist</h3>
+                <ul className="mt-4 space-y-2 text-sm text-slate-500">
                   <li>Camera: {cameraOn ? "Active" : "Inactive"}</li>
                   <li>Microphone: {micOn ? "Active" : "Inactive"}</li>
                   <li>Screen Share: {sharingScreen ? "Active" : "Inactive"}</li>
@@ -677,41 +677,41 @@ export default function InterviewLauncher({
                 </ul>
               </div>
 
-              <div className="glass rounded-2xl p-5">
-                <h3 className="text-2xl font-semibold">AI Notes (Live)</h3>
-                <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-muted">
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-2xl font-semibold text-slate-900">AI Notes (Live)</h3>
+                <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-slate-500">
                   <li>Communication: {lastScore && lastScore > 7 ? "Strong" : "In Progress"}</li>
                   <li>Confidence: {history.length > 2 ? "Improving" : "Baseline"}</li>
                   <li>Technical Clarity: {lastScore && lastScore > 6 ? "Good" : "Needs detail"}</li>
                   <li>Practical Examples: {history.filter((t) => t.role === "candidate").length > 1 ? "Present" : "Waiting"}</li>
                 </ul>
-                {lastAnalysis ? <p className="mt-3 text-sm text-emerald-200/90">{lastAnalysis}</p> : null}
+                {lastAnalysis ? <p className="mt-3 text-sm text-emerald-700">{lastAnalysis}</p> : null}
               </div>
 
-              <div className="glass rounded-2xl p-5">
-                <h3 className="text-2xl font-semibold">Current Question</h3>
-                <p className="mt-2 text-xs uppercase tracking-[0.1em] text-cyan-200">Technical • Adaptive</p>
-                <p className="mt-3 text-lg leading-relaxed">{currentQuestion}</p>
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-2xl font-semibold text-slate-900">Current Question</h3>
+                <p className="mt-2 text-xs uppercase tracking-[0.1em] text-cyan-700">Technical • Adaptive</p>
+                <p className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-lg leading-relaxed text-slate-800">{currentQuestion}</p>
                 <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-muted">Timer: {formatClock(elapsedSec)}</p>
+                  <p className="text-sm text-slate-500">Timer: {formatClock(elapsedSec)}</p>
                   <button
                     onClick={() => setShowQuestionDetails((v) => !v)}
-                    className="rounded-lg bg-panel px-3 py-2 text-sm ring-1 ring-muted/25"
+                    className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200"
                   >
                     {showQuestionDetails ? "Hide Details" : "View Details"}
                   </button>
                 </div>
                 {showQuestionDetails ? (
-                  <div className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-500/10 p-3 text-sm text-cyan-100">
+                  <div className="mt-3 rounded-lg border border-cyan-200 bg-cyan-50 p-3 text-sm text-cyan-800">
                     This question is generated from resume + latest answer context. AI expects architecture depth, trade-offs, and production examples.
                   </div>
                 ) : null}
               </div>
 
-              <div id="controls" className="glass rounded-2xl p-5">
-                <h3 className="text-xl font-semibold">Interview Controls</h3>
+              <div id="controls" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h3 className="text-xl font-semibold text-slate-900">Interview Controls</h3>
                 <div className="mt-4 grid grid-cols-2 gap-2">
-                  <button onClick={runDeviceCheck} className="rounded-lg bg-panel px-3 py-2 text-sm ring-1 ring-muted/30">
+                  <button onClick={runDeviceCheck} className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200">
                     {checkState === "checking" ? "Checking..." : "Check Devices"}
                   </button>
                   <button
@@ -724,26 +724,26 @@ export default function InterviewLauncher({
                   <button
                     onClick={startListening}
                     disabled={listening || loadingQuestion || status !== "in_progress" || !micOn}
-                    className="rounded-lg bg-panel px-3 py-2 text-sm ring-1 ring-muted/30 disabled:opacity-60"
+                    className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200 disabled:opacity-60"
                   >
                     {listening ? "Listening..." : "Listen"}
                   </button>
                   <button
                     onClick={stopListening}
                     disabled={!listening}
-                    className="rounded-lg bg-panel px-3 py-2 text-sm ring-1 ring-muted/30 disabled:opacity-60"
+                    className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200 disabled:opacity-60"
                   >
                     Stop
                   </button>
                 </div>
-                <label className="mt-3 flex items-center gap-2 text-sm text-muted">
+                <label className="mt-3 flex items-center gap-2 text-sm text-slate-500">
                   <input type="checkbox" checked={autoListen} onChange={(e) => setAutoListen(e.target.checked)} />
                   Auto listen after AI speech
                 </label>
-                <p className="mt-2 text-xs text-muted">
+                <p className="mt-2 text-xs text-slate-500">
                   Candidate: {candidateName} • {candidateEmail}
                 </p>
-                <p className="mt-1 text-xs text-muted">
+                <p className="mt-1 text-xs text-slate-500">
                   Role: {jobTitle} • Status: {status}
                 </p>
                 {!canStart ? <p className="mt-2 text-xs text-amber-300">{startBlockReason}</p> : null}

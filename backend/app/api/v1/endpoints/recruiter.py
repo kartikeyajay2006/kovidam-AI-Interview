@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -10,6 +10,7 @@ from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, J
 from app.schemas.recruiter import (
     BulkInviteResponse,
     CandidateCreate,
+    CandidateDashboardOut,
     CandidateOut,
     DashboardStats,
     InterviewCreate,
@@ -224,6 +225,64 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
 def list_candidates(db: Session = Depends(get_db)):
     candidates = db.execute(select(Candidate).order_by(Candidate.created_at.desc())).scalars().all()
     return list(candidates)
+
+
+@router.delete("/candidates/{candidate_id}")
+def delete_candidate(candidate_id: UUID, db: Session = Depends(get_db)):
+    candidate = db.execute(select(Candidate).where(Candidate.id == candidate_id)).scalars().first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    interview_ids = db.execute(
+        select(InterviewSession.id).where(InterviewSession.candidate_id == candidate_id)
+    ).scalars().all()
+    if interview_ids:
+        db.execute(delete(InterviewTurnLog).where(InterviewTurnLog.interview_id.in_(interview_ids)))
+        db.execute(delete(InterviewSession).where(InterviewSession.id.in_(interview_ids)))
+
+    db.execute(delete(Resume).where(Resume.candidate_id == candidate_id))
+    db.execute(delete(Candidate).where(Candidate.id == candidate_id))
+    db.commit()
+    return {"deleted": True, "candidate_id": str(candidate_id)}
+
+
+@router.get("/candidates/dashboard", response_model=list[CandidateDashboardOut])
+def list_candidates_dashboard(db: Session = Depends(get_db)):
+    rows = db.execute(
+        select(Candidate, Job)
+        .join(Job, Job.id == Candidate.job_id)
+        .order_by(Candidate.created_at.desc())
+    ).all()
+
+    result: list[CandidateDashboardOut] = []
+    for candidate, job in rows:
+        latest_interview = db.execute(
+            select(InterviewSession)
+            .where(InterviewSession.candidate_id == candidate.id)
+            .where(InterviewSession.job_id == candidate.job_id)
+            .order_by(InterviewSession.created_at.desc())
+        ).scalars().first()
+        interview_count = db.execute(
+            select(func.count())
+            .select_from(InterviewSession)
+            .where(InterviewSession.candidate_id == candidate.id)
+            .where(InterviewSession.job_id == candidate.job_id)
+        ).scalar_one()
+        result.append(
+            CandidateDashboardOut(
+                id=candidate.id,
+                job_id=candidate.job_id,
+                job_title=job.title,
+                name=candidate.name,
+                email=candidate.email,
+                phone=candidate.phone,
+                skills=candidate.skills,
+                invite_sent=interview_count > 0,
+                interview_count=interview_count,
+                latest_interview_status=latest_interview.status if latest_interview else "not_scheduled",
+            )
+        )
+    return result
 
 
 @router.post("/interviews", response_model=InterviewOut)

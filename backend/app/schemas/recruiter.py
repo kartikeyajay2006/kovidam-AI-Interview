@@ -42,6 +42,19 @@ class CandidateOut(BaseModel):
     skills: str
 
 
+class CandidateDashboardOut(BaseModel):
+    id: UUID
+    job_id: UUID
+    job_title: str
+    name: str
+    email: str
+    phone: str
+    skills: str
+    invite_sent: bool
+    interview_count: int
+    latest_interview_status: str
+
+
 class InterviewCreate(BaseModel):
     candidate_id: UUID
     job_id: UUID

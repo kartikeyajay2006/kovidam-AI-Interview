@@ -1,4 +1,5 @@
 import DashboardControls from "../../components/recruiter/dashboard-controls";
+import CandidatesTable from "../../components/recruiter/candidates-table";
 
 type DashboardStats = {
   total_jobs: number;
@@ -15,6 +16,19 @@ type Job = {
   difficulty: string;
   interview_type: string;
   duration_minutes: number;
+};
+
+type CandidateDashboard = {
+  id: string;
+  job_id: string;
+  job_title: string;
+  name: string;
+  email: string;
+  phone: string;
+  skills: string;
+  invite_sent: boolean;
+  interview_count: number;
+  latest_interview_status: string;
 };
 
 async function getStats(): Promise<DashboardStats> {
@@ -43,8 +57,18 @@ async function getJobs(): Promise<Job[]> {
   }
 }
 
+async function getCandidatesDashboard(): Promise<CandidateDashboard[]> {
+  try {
+    const res = await fetch("http://localhost:8000/api/v1/candidates/dashboard", { cache: "no-store" });
+    if (!res.ok) throw new Error("Failed to load candidates");
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
 export default async function DashboardPage() {
-  const [stats, jobs] = await Promise.all([getStats(), getJobs()]);
+  const [stats, jobs, candidates] = await Promise.all([getStats(), getJobs(), getCandidatesDashboard()]);
 
   return (
     <main className="min-h-screen bg-slate-50 flex flex-col">
@@ -84,6 +108,8 @@ export default async function DashboardPage() {
         </section>
 
         <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} />
+
+        <CandidatesTable candidates={candidates} />
       </div>
     </main>
   );
