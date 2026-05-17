@@ -6,6 +6,7 @@
     "dev": "next dev --turbo",
     "dev:reset": "rm -rf .next node_modules/.cache && next dev --turbo",
     "dev:safe": "sh -c 'rm -rf .next node_modules/.cache; next dev --turbo'",
+    "dev:stable": "sh -c 'rm -rf .next node_modules/.cache; next dev'",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

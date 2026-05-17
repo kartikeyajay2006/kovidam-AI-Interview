@@ -11,14 +11,14 @@ Production-grade AI Interview & Candidate Evaluation Platform for recruiters and
 Run this from the project root (works on any laptop path, no hardcoded directory):
 
 ```bash
-cp backend/.env.example backend/.env && cp frontend/.env.local frontend/.env.local.bak 2>/dev/null || true; cd frontend && npm install && cd .. && docker compose up -d --build && until curl -sf http://localhost:8000/api/v1/health/live; do sleep 1; done && echo "Backend is live" && cd frontend && npm run dev
+[ -f backend/.env ] || cp backend/.env.example backend/.env; cd frontend && npm install && cd .. && docker compose up -d --build --force-recreate postgres redis backend && until curl -sf http://localhost:8000/api/v1/health/live; do sleep 1; done && echo "Backend is live" && cd frontend && npm run dev:stable
 ```
 This command does:
-1. Prepares backend env file from template.
+1. Creates `backend/.env` from template only if it does not exist (does not overwrite your SMTP keys).
 2. Installs frontend cdependencies.
-3. Starts Postgres + Redis + Backend in Docker.
+3. Rebuilds/recreates Postgres + Redis + Backend in Docker so latest env values are loaded.
 4. Waits for backend health to become ready.
-5. Starts frontend dev server.
+5. Starts frontend dev server in stable mode.
 
 ## URLs
 - Frontend: `http://localhost:3000`
@@ -36,6 +36,7 @@ curl -s http://localhost:8000/api/v1/health/live && echo && curl -s http://local
 ```
 
 ## Notes
-- Set real SMTP + OpenAI keys in `backend/.env` for mail + AI interview generation.
+- Set real SMTP + GROQ keys in `backend/.env` for mail + AI interview generation.
+- Do not run `cp backend/.env.example backend/.env` after setting SMTP keys, or your SMTP config will be erased.
 - Use real candidate emails (fake domains like `example.com` are blocked).
 - Resume upload APIs were removed. Add candidates directly and optionally paste parsed resume JSON in the dashboard/API.
