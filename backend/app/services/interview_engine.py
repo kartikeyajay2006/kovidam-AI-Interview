@@ -21,6 +21,7 @@ QUESTION_BANK = [
 ]
 
 PII_LINE_HINTS = ("email", "mail", "phone", "mobile", "address", "location", "contact", "github.com", "linkedin.com")
+INTERVIEW_COMPLETE_SENTINEL = "__INTERVIEW_COMPLETE__"
 
 
 def _redact_pii(text: str) -> str:
@@ -215,6 +216,28 @@ def _count_followups_after_main(cleaned_history: list[dict], main_question: str)
     return max(0, len(assistant_turns) - pos - 1)
 
 
+def _determine_main_state(cleaned_history: list[dict], main_questions: list[str]) -> tuple[int, int]:
+    """
+    Returns (current_main_idx, followups_done_for_current_main).
+    Each topic consists of exactly 3 questions (1 main + 2 followups).
+    """
+    assistant_turns = [t for t in cleaned_history if t.get("role") == "assistant"]
+    total = len(assistant_turns)
+    
+    if not assistant_turns or not main_questions:
+        return 0, 0
+
+    current_main_idx = total // 3
+    followups_done = total % 3
+
+    if current_main_idx >= len(main_questions):
+        # Prevent index out of bounds if conversation goes too long
+        current_main_idx = len(main_questions) - 1
+        followups_done = 2
+        
+    return current_main_idx, followups_done
+
+
 def _generate_ai_followups(
     *,
     settings,
@@ -225,12 +248,12 @@ def _generate_ai_followups(
     difficulty: str,
     parsed_sections: dict,
     cleaned_history: list[dict],
-) -> list[str]:
-    if not settings.groq_api_key:
+) -> tuple[list[str], str]:
+    if not settings.openai_api_key:
         return [
             "What was the hardest technical challenge in that context?",
             "What would you improve if you rebuilt it today?",
-        ]
+        ], "api_skipped:no_openai_key"
 
     prompt = {
         "task": "Generate exactly 2 technical follow-up interview questions.",
@@ -252,15 +275,23 @@ def _generate_ai_followups(
             "Return strict JSON only",
             "Do not repeat earlier asked questions",
             "Ask concrete, technical, evaluable questions",
+            "Acknowledge the candidate's last answer organically in your follow-ups (e.g. 'That makes sense. Given that you used X, how did you handle Y?') to sound highly conversational.",
+            "Maintain a warm, enthusiastic, and human-like persona",
             "Follow-ups must directly deepen the main question",
         ],
         "output_schema": {"followups": ["q1", "q2"]},
     }
 
     body = {
-        "model": settings.groq_model,
+        "model": settings.openai_model,
         "messages": [
-            {"role": "system", "content": "You are a senior technical interviewer. Return strict JSON only."},
+            {
+                "role": "system", 
+                "content": (
+                    "You are a warm, conversational senior technical interviewer. "
+                    "Speak naturally like a real human. Return strict JSON only."
+                )
+            },
             {"role": "user", "content": json.dumps(prompt)},
         ],
         "temperature": 0.2,
@@ -270,8 +301,8 @@ def _generate_ai_followups(
     try:
         with httpx.Client(timeout=20) as client:
             resp = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"},
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
                 json=body,
             )
             resp.raise_for_status()
@@ -280,13 +311,90 @@ def _generate_ai_followups(
             if isinstance(followups, list):
                 cleaned = [str(f).strip() for f in followups if str(f).strip()]
                 if len(cleaned) >= 2:
-                    return cleaned[:2]
-    except Exception:
-        pass
-    return [
-        "What was the hardest technical challenge in that context?",
-        "What would you improve if you rebuilt it today?",
-    ]
+                    return cleaned[:2], "api_success"
+            return [
+                "What was the hardest technical challenge in that context?",
+                "What would you improve if you rebuilt it today?",
+            ], "api_invalid_followups_shape"
+    except Exception as exc:
+        return [
+            "What was the hardest technical challenge in that context?",
+            "What would you improve if you rebuilt it today?",
+        ], f"api_error:{str(exc)[:120]}"
+
+
+def _generate_ai_main_question(
+    *,
+    settings,
+    main_topic: str,
+    role_title: str,
+    job_description: str,
+    interview_type: str,
+    difficulty: str,
+    parsed_sections: dict,
+    cleaned_history: list[dict],
+) -> tuple[str, str]:
+    if not settings.openai_api_key:
+        return main_topic, "api_skipped:no_openai_key"
+
+    prompt = {
+        "task": "Generate one human-like technical interview question.",
+        "target_main_topic": main_topic,
+        "job_context": {
+            "role_title": role_title,
+            "job_description": (job_description or "")[:3000],
+            "interview_type": interview_type,
+            "difficulty": difficulty,
+        },
+        "candidate_context": {
+            "skills": parsed_sections.get("skills", []),
+            "projects": parsed_sections.get("projects", []),
+            "experience": parsed_sections.get("experience", []),
+            "work_experience_years": parsed_sections.get("work_experience_years", ""),
+        },
+        "history": cleaned_history[-10:],
+        "constraints": [
+            "Return strict JSON only",
+            "Question should sound warm, natural, and highly conversational (e.g. 'I see you worked on X, could you tell me more about...')",
+            "Maintain a friendly, human-like persona rather than acting like a robotic examiner",
+            "Keep one question only (no multi-question chaining)",
+            "No repetition with history",
+            "Technically evaluable and role-relevant",
+        ],
+        "output_schema": {"question": "string"},
+    }
+    body = {
+        "model": settings.openai_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a warm, conversational senior technical interviewer. "
+                    "Speak naturally like a real human interviewer while staying concise and technical. "
+                    "Return strict JSON only."
+                ),
+            },
+            {"role": "user", "content": json.dumps(prompt)},
+        ],
+        "temperature": 0.35,
+        "max_tokens": 150,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
+                json=body,
+            )
+            resp.raise_for_status()
+            parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
+            q = str(parsed.get("question") or "").strip()
+            if q:
+                return q, "api_success"
+            return main_topic, "api_invalid_main_shape"
+    except Exception as exc:
+        return main_topic, f"api_error:{str(exc)[:120]}"
 
 
 def generate_interview_question(
@@ -307,38 +415,45 @@ def generate_interview_question(
     bank = human_question_bank if human_question_bank else _build_default_human_bank()
     parsed_sections = _extract_parsed_sections(parsed_resume_json)
     safe_resume_text = _sanitize_resume_text(resume_text)[:4000]
-    asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
-    last_candidate_answer = ""
-    for t in reversed(cleaned_history):
-        if t.get("role") == "candidate" and t.get("content"):
-            last_candidate_answer = t["content"][:800]
-            break
-    coverage_state = _build_coverage_state(cleaned_history)
-
     main_questions = [b["question"] for b in bank if b.get("type") == "main" and b.get("question")]
     if not main_questions:
         main_questions = [q["main"] for q in QUESTION_BANK]
+    asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
+    current_main_idx, followups_done = _determine_main_state(cleaned_history, main_questions)
 
-    # Enforced interview rhythm:
-    # Main Q -> AI Follow-up 1 -> AI Follow-up 2 -> Next Main Q
-    asked_norm = [_normalize(q) for q in asked_questions]
-    current_main_idx = 0
-    current_main_question = main_questions[0]
-    for idx, mq in enumerate(main_questions):
-        if _normalize(mq) not in asked_norm:
-            current_main_idx = idx
-            current_main_question = mq
-            break
-    else:
-        current_main_idx = len(main_questions) - 1
-        current_main_question = main_questions[-1]
+    # No main asked yet -> ask first (AI wording over configured main topic).
+    if not asked_questions:
+        ai_main_q, main_meta = _generate_ai_main_question(
+            settings=settings,
+            main_topic=main_questions[0],
+            role_title=role_title,
+            job_description=job_description,
+            interview_type=interview_type,
+            difficulty=difficulty,
+            parsed_sections=parsed_sections,
+            cleaned_history=cleaned_history,
+        )
+        return ai_main_q, f"source=main state=main_1_start {main_meta}"
 
-    if _normalize(current_main_question) not in asked_norm:
-        return current_main_question, f"Main question {current_main_idx + 1}/{len(main_questions)}."
+    # If last main is complete (2 followups done), move to next main.
+    if followups_done >= 2:
+        next_main_idx = current_main_idx + 1
+        if next_main_idx >= len(main_questions):
+            return INTERVIEW_COMPLETE_SENTINEL, "source=complete state=all_main_completed"
+        ai_main_q, main_meta = _generate_ai_main_question(
+            settings=settings,
+            main_topic=main_questions[next_main_idx],
+            role_title=role_title,
+            job_description=job_description,
+            interview_type=interview_type,
+            difficulty=difficulty,
+            parsed_sections=parsed_sections,
+            cleaned_history=cleaned_history,
+        )
+        return ai_main_q, f"source=main state=main_{next_main_idx + 1}_start {main_meta}"
 
-    followups_done = _count_followups_after_main(cleaned_history, current_main_question)
-
-    followups = _generate_ai_followups(
+    current_main_question = main_questions[current_main_idx]
+    followups, followup_meta = _generate_ai_followups(
         settings=settings,
         main_question=current_main_question,
         role_title=role_title,
@@ -351,129 +466,22 @@ def generate_interview_question(
     if followups_done < 2:
         next_fup = followups[followups_done]
         if not _is_repetitive(next_fup, asked_questions):
-            return next_fup, f"AI follow-up {followups_done + 1}/2 for main question {current_main_idx + 1}."
+            return next_fup, (
+                f"source=ai_followup state=main_{current_main_idx + 1} "
+                f"followup={followups_done + 1}/2 {followup_meta}"
+            )
         # If generated follow-up repeats, use a deterministic safe fallback follow-up.
         safe_followup = (
             "What was the hardest technical challenge in that context?"
             if followups_done == 0
             else "What would you improve if you rebuilt it today?"
         )
-        return safe_followup, f"Fallback follow-up {followups_done + 1}/2 for main question {current_main_idx + 1}."
+        return safe_followup, (
+            f"source=fallback_followup state=main_{current_main_idx + 1} "
+            f"followup={followups_done + 1}/2 reason=repetitive"
+        )
 
-    # Exactly after 2 follow-ups, move to next main question.
-    next_main_idx = current_main_idx + 1
-    if next_main_idx < len(main_questions):
-        return main_questions[next_main_idx], f"Main question {next_main_idx + 1}/{len(main_questions)}."
-
-    if not settings.groq_api_key:
-        return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
-
-    payload = {
-        "job_context": {
-            "title": role_title,
-            "description": (job_description or "")[:4000],
-            "interview_type": interview_type,
-            "difficulty": difficulty,
-        },
-        "candidate_context": {
-            "parsed_resume": {
-                "skills_section": {"items": parsed_sections["skills"]},
-                "projects_section": {"items": parsed_sections["projects"]},
-                "experience_section": {"items": parsed_sections["experience"]},
-                "work_experience_years": parsed_sections["work_experience_years"],
-            },
-            "resume_skills_csv": resume_skills,
-            "resume_text_excerpt": safe_resume_text,
-        },
-        "human_question_bank": bank,
-        "interview_runtime_state": {
-            "history": cleaned_history,
-            "asked_questions": asked_questions,
-            "last_candidate_answer": last_candidate_answer,
-            "coverage_state": coverage_state,
-        },
-        "instruction_policy": {
-            "goal": "Pick next best technical interview question",
-            "constraints": [
-                "Use JD + skills/projects/experience context",
-                "Avoid repeating previously asked questions",
-                "Ask exactly one clear question",
-                "Prefer deeper probing when candidate answers are strong",
-                "If weak signal, ask evidence-seeking clarification",
-                "Question must be concrete, specific, and technically evaluable",
-                "No generic motivation or culture-fit unless explicitly asked by interviewer stage",
-                "Prioritize uncovered competency buckets first",
-            ],
-            "allow_question_rewrite_from_human_bank": True,
-            "strict_json_only": True,
-        },
-        "required_output_schema": {
-            "question_id": "string",
-            "question": "string",
-            "why_this_question_now": "string",
-            "target_skill": "string",
-            "competency_bucket": "string",
-            "difficulty": "easy|medium|hard",
-            "expected_signal": "string",
-            "follow_up_if_strong": "string",
-            "follow_up_if_weak": "string",
-            "anti_repeat_key": "string",
-        },
-    }
-
-    request_body = {
-        "model": settings.groq_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                "You are a senior technical interviewer. "
-                    "Return strict JSON only with the exact keys from required_output_schema. "
-                    "Produce one high-quality technical question only."
-                ),
-            },
-            {"role": "user", "content": json.dumps(payload)},
-        ],
-        "temperature": 0.15,
-        "max_tokens": 420,
-        "response_format": {"type": "json_object"},
-    }
-
-    try:
-        with httpx.Client(timeout=25) as client:
-            response = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_body,
-            )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-
-            question = str(parsed.get("question") or "").strip()
-            if not question:
-                return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
-            if _is_repetitive(question, asked_questions):
-                return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
-            if len(question.split()) < 7:
-                return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
-
-            rationale = str(parsed.get("why_this_question_now") or "").strip() or "LLM-selected next best question."
-            target_skill = str(parsed.get("target_skill") or "").strip()
-            bucket = str(parsed.get("competency_bucket") or "").strip()
-            qid = str(parsed.get("question_id") or "").strip()
-            difficulty_out = str(parsed.get("difficulty") or "").strip()
-
-            final_rationale = (
-                f"{rationale} "
-                f"[question_id={qid or 'n/a'} | skill={target_skill or 'n/a'} | bucket={bucket or 'n/a'} | difficulty={difficulty_out or 'n/a'}]"
-            )
-            return question[:500], final_rationale[:1000]
-    except Exception:
-        return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
+    return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
 
 
 def analyze_candidate_answer(
@@ -487,7 +495,7 @@ def analyze_candidate_answer(
         return "No answer provided.", 0.0
 
     settings = get_settings()
-    if not settings.groq_api_key:
+    if not settings.openai_api_key:
         word_count = len(cleaned.split())
         if word_count < 10:
             return "Answer is very short. Needs more technical depth.", 3.5
@@ -504,7 +512,8 @@ def analyze_candidate_answer(
             "Analyze the candidate answer deeply. Evaluate communication, technical knowledge, confidence, "
             "problem-solving, ownership, clarity of thought, and authenticity (including signs of memorized answers). "
             "Do not reveal scores to candidate-facing text. "
-            "Return strict JSON only: "
+            "Return strict JSON only. Do not wrap the JSON in any other object like 'evaluation'. "
+            "Your response must be a single flat JSON object with EXACTLY these keys: "
             "{\"analysis\":\"candidate-facing concise feedback\","
             "\"confidence_score\": number,"
             "\"communication_score\": number,"
@@ -518,7 +527,7 @@ def analyze_candidate_answer(
     }
 
     request_body = {
-        "model": settings.groq_model,
+        "model": settings.openai_model,
         "messages": [
             {"role": "system", "content": "You are a strict technical interview evaluator."},
             {"role": "user", "content": json.dumps(prompt)},
@@ -531,9 +540,9 @@ def analyze_candidate_answer(
     try:
         with httpx.Client(timeout=20) as client:
             response = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
+                    "Authorization": f"Bearer {settings.openai_api_key}",
                     "Content-Type": "application/json",
                 },
                 json=request_body,

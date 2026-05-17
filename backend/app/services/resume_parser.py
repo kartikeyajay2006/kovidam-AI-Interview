@@ -164,7 +164,7 @@ def extract_structured_sections_fallback(text: str) -> dict[str, list[dict[str, 
 
 def extract_structured_with_api(text: str) -> dict[str, str]:
     settings = get_settings()
-    if not settings.groq_api_key:
+    if not settings.openai_api_key:
         return {}
 
     prompt = {
@@ -177,7 +177,7 @@ def extract_structured_with_api(text: str) -> dict[str, str]:
         ),
     }
     payload = {
-        "model": settings.groq_model,
+        "model": settings.openai_model,
         "messages": [
             {"role": "system", "content": "You extract structured data from resumes."},
             {"role": "user", "content": json.dumps(prompt)},
@@ -189,9 +189,9 @@ def extract_structured_with_api(text: str) -> dict[str, str]:
     try:
         with httpx.Client(timeout=25) as client:
             resp = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
+                    "Authorization": f"Bearer {settings.openai_api_key}",
                     "Content-Type": "application/json",
                 },
                 json=payload,
@@ -287,7 +287,7 @@ def save_parsed_resume(
         "experience_items": structured_fallback["experience_items"],
         "extracted_text_preview": extracted_text[:1500],
         "extracted_text_full": extracted_text,
-        "parsed_by": "groq_api" if api_data else "local_regex",
+        "parsed_by": "openai_api" if api_data else "local_regex",
         "api_error": api_data.get("api_error", ""),
     }
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")

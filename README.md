@@ -36,6 +36,6 @@ curl -s http://localhost:8000/api/v1/health/live && echo && curl -s http://local
 ```
 
 ## Notes
-- Set real SMTP + GROQ keys in `backend/.env` for mail + AI interview generation.
+- Set real SMTP + OpenAI keys in `backend/.env` for mail + AI interview generation.
 - Use real candidate emails (fake domains like `example.com` are blocked).
 - Resume upload APIs were removed. Add candidates directly and optionally paste parsed resume JSON in the dashboard/API.

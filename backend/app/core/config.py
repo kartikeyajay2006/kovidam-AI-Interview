@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = Field(default=False, alias="SMTP_USE_SSL")
 
     frontend_base_url: str = Field(default="http://localhost:3000", alias="FRONTEND_BASE_URL")
-    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
-    groq_model: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL")
+    openai_api_key: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_KEY", "GROQ_API_KEY"))
+    openai_model: str = Field(default="gpt-4o-mini", validation_alias=AliasChoices("OPENAI_MODEL", "GROQ_MODEL"))
 
 
 @lru_cache(maxsize=1)

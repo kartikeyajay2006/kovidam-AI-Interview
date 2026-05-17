@@ -27,7 +27,12 @@ from app.schemas.recruiter import (
     SendInterviewLinkResponse,
 )
 from app.services.email_service import send_interview_email
-from app.services.interview_engine import QUESTION_BANK, analyze_candidate_answer, generate_interview_question
+from app.services.interview_engine import (
+    INTERVIEW_COMPLETE_SENTINEL,
+    QUESTION_BANK,
+    analyze_candidate_answer,
+    generate_interview_question,
+)
 
 router = APIRouter(tags=["recruiter"])
 
@@ -398,7 +403,15 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         human_question_bank=payload.human_question_bank or _default_human_question_bank(),
         history=merged_history,
     )
-    rationale = f"{rationale} Job Context: {job.title}. JD: {job.description[:220]}"
+    if question == INTERVIEW_COMPLETE_SENTINEL:
+        interview.status = "completed"
+        db.commit()
+        return InterviewQuestionResponse(
+            question="Interview complete. Thank you for your responses.",
+            rationale="source=completion_guard state=closed",
+        )
+
+    rationale = f"{rationale} job={job.title} jd_excerpt={job.description[:120]}"
 
     db.add(
         InterviewTurnLog(
@@ -496,6 +509,32 @@ def qna_map(interview_id: UUID, db: Session = Depends(get_db)):
             )
 
     return {"interview_id": str(interview_id), "qna_pairs": pairs}
+
+
+@router.get("/interviews/{interview_id}/state-trace")
+def interview_state_trace(interview_id: UUID, db: Session = Depends(get_db)):
+    turns = db.execute(
+        select(InterviewTurnLog)
+        .where(InterviewTurnLog.interview_id == interview_id)
+        .order_by(InterviewTurnLog.created_at.asc())
+    ).scalars().all()
+
+    assistant_turns = [t for t in turns if t.role == "assistant"]
+    candidate_turns = [t for t in turns if t.role == "candidate"]
+    trace = [
+        {"question": t.content, "rationale": t.analysis, "created_at": t.created_at.isoformat()}
+        for t in assistant_turns
+    ]
+    return {
+        "interview_id": str(interview_id),
+        "assistant_questions_count": len(assistant_turns),
+        "candidate_answers_count": len(candidate_turns),
+        "status": (
+            db.execute(select(InterviewSession.status).where(InterviewSession.id == interview_id)).scalar_one_or_none()
+            or "unknown"
+        ),
+        "trace": trace,
+    }
 
 
 @router.post("/interviews/send-link", response_model=SendInterviewLinkResponse)
