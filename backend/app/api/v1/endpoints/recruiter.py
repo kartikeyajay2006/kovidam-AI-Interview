@@ -64,6 +64,32 @@ def _extract_skills_from_parsed_json(parsed_resume_json: dict) -> str:
     return ""
 
 
+def _extract_candidate_fields(parsed_resume_json: dict) -> tuple[str, str, str]:
+    if not isinstance(parsed_resume_json, dict):
+        return "", "", ""
+    data = parsed_resume_json.get("data") if isinstance(parsed_resume_json.get("data"), dict) else {}
+    raw_text = str(data.get("raw_text_full") or data.get("raw_text_preview") or "")
+    candidate_name = ""
+    candidate_email = ""
+    candidate_phone = ""
+
+    if raw_text:
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if lines:
+            candidate_name = lines[0][:120]
+
+        import re
+        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", raw_text)
+        if email_match:
+            candidate_email = email_match.group(0).strip()
+
+        phone_match = re.search(r"(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{3}\)?[\s-]?)?\d{3}[\s-]?\d{4}", raw_text)
+        if phone_match:
+            candidate_phone = phone_match.group(0).strip()
+
+    return candidate_name, candidate_email, candidate_phone
+
+
 def _build_resume_context(parsed_resume_json: dict) -> tuple[str, str]:
     if not isinstance(parsed_resume_json, dict) or not parsed_resume_json:
         return "", ""
@@ -150,7 +176,16 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
     if not job_exists:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    validate_recipient_email(payload.email)
+    extracted_name, extracted_email, extracted_phone = _extract_candidate_fields(payload.parsed_resume_json)
+    candidate_name = extracted_name or payload.name.strip()
+    candidate_email = extracted_email or payload.email.strip()
+    candidate_phone = extracted_phone or payload.phone.strip()
+    if not candidate_email:
+        raise HTTPException(status_code=400, detail="Could not extract candidate email from parsed_resume_json")
+    if not candidate_name:
+        candidate_name = candidate_email.split("@")[0]
+
+    validate_recipient_email(candidate_email)
 
     merged_skills = payload.skills.strip()
     parsed_skills = _extract_skills_from_parsed_json(payload.parsed_resume_json)
@@ -159,9 +194,9 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
 
     candidate = Candidate(
         job_id=payload.job_id,
-        name=payload.name,
-        email=payload.email,
-        phone=payload.phone,
+        name=candidate_name,
+        email=candidate_email,
+        phone=candidate_phone,
         skills=merged_skills,
     )
     db.add(candidate)

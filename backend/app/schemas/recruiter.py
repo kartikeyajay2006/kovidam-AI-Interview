@@ -24,8 +24,8 @@ class JobOut(BaseModel):
 
 class CandidateCreate(BaseModel):
     job_id: UUID
-    name: str
-    email: str
+    name: str = ""
+    email: str = ""
     phone: str = ""
     skills: str = ""
     parsed_resume_json: dict = {}

@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap");
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,15 +8,42 @@
 }
 
 body {
-  @apply bg-bg text-text;
-  background-image: radial-gradient(1200px circle at 0% 0%, rgba(77, 226, 197, 0.16), transparent 38%),
-    radial-gradient(1000px circle at 100% 0%, rgba(122, 162, 255, 0.17), transparent 42%),
-    linear-gradient(180deg, #090d1a 0%, #0b1020 100%);
+  @apply text-text;
+  font-family: "Inter", sans-serif;
+  background: #050505;
   min-height: 100vh;
 }
 
 .glass {
-  background: rgba(18, 26, 49, 0.55);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(165, 177, 216, 0.2);
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mono {
+  font-family: "JetBrains Mono", monospace;
+}
+
+.mesh {
+  background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.12) 1px, transparent 0);
+  background-size: 12px 12px;
+}
+
+.ambient-frame {
+  box-shadow: inset 0 0 120px rgba(10, 132, 255, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.card-hover {
+  transition: border-color 180ms ease, opacity 180ms ease, box-shadow 180ms ease;
+}
+
+.card-hover:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 0 24px rgba(120, 180, 255, 0.12);
+}
+
+.faint-grid {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
 }

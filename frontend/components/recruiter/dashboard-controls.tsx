@@ -18,18 +18,12 @@ async function fetchWithFallback(path: string, init?: RequestInit): Promise<Resp
 export default function DashboardControls({ jobs }: { jobs: Job[] }) {
   const [jobTitle, setJobTitle] = useState("");
   const [jobDesc, setJobDesc] = useState("");
-  const [candidateName, setCandidateName] = useState("");
-  const [candidateEmail, setCandidateEmail] = useState("");
-  const [candidatePhone, setCandidatePhone] = useState("");
-  const [candidateSkills, setCandidateSkills] = useState("");
+  const [jobKind, setJobKind] = useState<"job" | "internship">("job");
   const [parsedResumeJson, setParsedResumeJson] = useState("");
   const [selectedJobId, setSelectedJobId] = useState(jobs[0]?.id || "");
   const [status, setStatus] = useState("");
 
-  const canCreateCandidate = useMemo(
-    () => Boolean(selectedJobId && candidateName.trim() && candidateEmail.trim()),
-    [selectedJobId, candidateName, candidateEmail]
-  );
+  const canCreateCandidate = useMemo(() => Boolean(selectedJobId && parsedResumeJson.trim()), [selectedJobId, parsedResumeJson]);
 
   async function createJob(e: FormEvent) {
     e.preventDefault();
@@ -42,7 +36,7 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
           title: jobTitle,
           description: jobDesc,
           difficulty: "medium",
-          interview_type: "mixed",
+          interview_type: jobKind,
           duration_minutes: 45,
         }),
       });
@@ -80,10 +74,6 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           job_id: selectedJobId,
-          name: candidateName,
-          email: candidateEmail,
-          phone: candidatePhone,
-          skills: candidateSkills,
           parsed_resume_json: parsed,
         }),
       });
@@ -126,47 +116,59 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
 
   return (
     <section className="glass mt-6 rounded-2xl p-8">
-      <h2 className="text-2xl font-semibold">Recruiter Actions</h2>
-      <p className="mt-2 text-sm text-muted">Create role, add candidates with parsed JSON, and send interview invites.</p>
+      <h2 className="text-2xl font-bold tracking-tight">Recruiter Actions</h2>
+      <p className="mt-2 text-sm text-[#9CA3AF]">Create role, add candidates with parsed JSON, and send interview invites.</p>
 
       <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
-        <form onSubmit={createJob} className="space-y-3 rounded-xl border border-muted/20 p-4">
+        <form onSubmit={createJob} className="mesh card-hover space-y-3 rounded-xl border border-white/[0.07] bg-white/[0.01] p-4">
           <p className="font-semibold">1. Create Job</p>
-          <input className="w-full rounded bg-panel p-2" placeholder="Job title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} required />
-          <textarea className="w-full rounded bg-panel p-2" placeholder="Description" value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} required />
-          <button className="rounded bg-accent px-3 py-2 text-black">Create Job</button>
+          <input className="w-full rounded border border-white/[0.07] bg-black/50 p-2" placeholder="Job title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} required />
+          <textarea className="w-full rounded border border-white/[0.07] bg-black/50 p-2" placeholder="Description" value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} required />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setJobKind("job")}
+              className={`mono rounded-full px-3 py-2 text-[11px] tracking-[0.18em] ${jobKind === "job" ? "bg-white text-black" : "border border-white/[0.12] bg-transparent text-white/70"}`}
+            >
+              Job
+            </button>
+            <button
+              type="button"
+              onClick={() => setJobKind("internship")}
+              className={`mono rounded-full px-3 py-2 text-[11px] tracking-[0.18em] ${jobKind === "internship" ? "bg-white text-black" : "border border-white/[0.12] bg-transparent text-white/70"}`}
+            >
+              Internship
+            </button>
+          </div>
+          <button className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black">Create Job</button>
         </form>
 
-        <form onSubmit={createCandidate} className="space-y-3 rounded-xl border border-muted/20 p-4">
+        <form onSubmit={createCandidate} className="mesh card-hover space-y-3 rounded-xl border border-white/[0.07] bg-white/[0.01] p-4">
           <p className="font-semibold">2. Add Candidate</p>
-          <select className="w-full rounded bg-panel p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
+          <select className="w-full rounded border border-white/[0.07] bg-black/50 p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
             {jobs.map((j) => (
               <option key={j.id} value={j.id}>{j.title}</option>
             ))}
           </select>
-          <input className="w-full rounded bg-panel p-2" placeholder="Candidate name" value={candidateName} onChange={(e) => setCandidateName(e.target.value)} required />
-          <input className="w-full rounded bg-panel p-2" placeholder="Candidate email" value={candidateEmail} onChange={(e) => setCandidateEmail(e.target.value)} required />
-          <input className="w-full rounded bg-panel p-2" placeholder="Phone (optional)" value={candidatePhone} onChange={(e) => setCandidatePhone(e.target.value)} />
-          <input className="w-full rounded bg-panel p-2" placeholder="Skills CSV (optional)" value={candidateSkills} onChange={(e) => setCandidateSkills(e.target.value)} />
-          <textarea className="w-full rounded bg-panel p-2" rows={5} placeholder="Paste parsed resume JSON (optional)" value={parsedResumeJson} onChange={(e) => setParsedResumeJson(e.target.value)} />
-          <button disabled={!canCreateCandidate} className="rounded bg-accent px-3 py-2 text-black disabled:cursor-not-allowed disabled:opacity-50">
+          <textarea className="mono w-full rounded border border-white/[0.07] bg-black/50 p-2 text-xs" rows={10} placeholder="Paste parsed resume JSON" value={parsedResumeJson} onChange={(e) => setParsedResumeJson(e.target.value)} />
+          <button disabled={!canCreateCandidate} className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50">
             Add Candidate
           </button>
         </form>
 
-        <form onSubmit={sendInterviewMailToRole} className="space-y-3 rounded-xl border border-muted/20 p-4">
+        <form onSubmit={sendInterviewMailToRole} className="mesh card-hover space-y-3 rounded-xl border border-white/[0.07] bg-white/[0.01] p-4">
           <p className="font-semibold">3. Send Interview Mail</p>
-          <select className="w-full rounded bg-panel p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
+          <select className="w-full rounded border border-white/[0.07] bg-black/50 p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
             {jobs.map((j) => (
               <option key={j.id} value={j.id}>{j.title}</option>
             ))}
           </select>
-          <p className="text-xs text-muted">Sends secure interview links to all candidates under selected role.</p>
-          <button className="rounded bg-accent px-3 py-2 text-black">Send Invite to All</button>
+          <p className="text-xs text-[#9CA3AF]">Sends secure interview links to all candidates under selected role.</p>
+          <button className="rounded-full border border-white/[0.14] px-4 py-2 text-sm text-white shadow-[0_2px_10px_rgba(255,255,255,0.1)] transition hover:border-white/[0.24]">Send Invite to All</button>
         </form>
       </div>
 
-      {status ? <p className="mt-4 text-sm text-muted break-all">{status}</p> : null}
+      {status ? <p className="mt-4 text-sm text-[#9CA3AF] break-all">{status}</p> : null}
     </section>
   );
 }
