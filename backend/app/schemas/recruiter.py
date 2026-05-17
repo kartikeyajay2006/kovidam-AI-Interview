@@ -104,6 +104,7 @@ class InterviewTurn(BaseModel):
 class InterviewQuestionRequest(BaseModel):
     history: list[InterviewTurn] = []
     parsed_resume_json: dict = {}
+    human_question_bank: list[dict] = []
 
 
 class InterviewQuestionResponse(BaseModel):

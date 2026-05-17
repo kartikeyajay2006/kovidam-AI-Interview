@@ -26,7 +26,7 @@ from app.schemas.recruiter import (
     SendInterviewLinkResponse,
 )
 from app.services.email_service import send_interview_email
-from app.services.interview_engine import analyze_candidate_answer, generate_interview_question
+from app.services.interview_engine import QUESTION_BANK, analyze_candidate_answer, generate_interview_question
 
 router = APIRouter(tags=["recruiter"])
 
@@ -118,6 +118,21 @@ def _build_resume_context(parsed_resume_json: dict) -> tuple[str, str]:
     raw_text_preview = str(data.get("raw_text_preview") or "").strip()
     resume_text = "\n".join(project_lines) or raw_text_preview
     return resume_text[:3000], skills
+
+
+def _default_human_question_bank() -> list[dict]:
+    bank: list[dict] = []
+    for idx, entry in enumerate(QUESTION_BANK, start=1):
+        bank.append(
+            {
+                "id": f"HQ{idx:02d}",
+                "question": entry["main"],
+                "difficulty": "medium",
+                "competency_bucket": "technical_depth",
+                "type": "main",
+            }
+        )
+    return bank
 
 
 def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple[bool, str]:
@@ -315,8 +330,13 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
 
     question, rationale = generate_interview_question(
         role_title=job.title,
+        job_description=job.description,
+        interview_type=job.interview_type,
+        difficulty=job.difficulty,
         resume_text=resume_text,
         resume_skills=resume_skills,
+        parsed_resume_json=payload.parsed_resume_json,
+        human_question_bank=payload.human_question_bank or _default_human_question_bank(),
         history=merged_history,
     )
     rationale = f"{rationale} Job Context: {job.title}. JD: {job.description[:220]}"
@@ -359,7 +379,26 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
     score = 0.0
     if role == "candidate":
         job = db.execute(select(Job).where(Job.id == interview_row.job_id)).scalars().first()
-        analysis, score = analyze_candidate_answer(payload.content, job.title if job else "Software Engineer")
+        candidate = db.execute(select(Candidate).where(Candidate.id == interview_row.candidate_id)).scalars().first()
+        turns = db.execute(
+            select(InterviewTurnLog)
+            .where(InterviewTurnLog.interview_id == interview_id)
+            .order_by(InterviewTurnLog.created_at.asc())
+        ).scalars().all()
+        history = [{"role": t.role, "content": t.content} for t in turns]
+        history.append({"role": "candidate", "content": payload.content})
+        candidate_info = {
+            "name": candidate.name if candidate else "",
+            "email": candidate.email if candidate else "",
+            "phone": candidate.phone if candidate else "",
+            "skills": candidate.skills if candidate else "",
+        }
+        analysis, score = analyze_candidate_answer(
+            payload.content,
+            job.title if job else "Software Engineer",
+            candidate_info=candidate_info,
+            full_history=history,
+        )
 
     turn = InterviewTurnLog(
         interview_id=interview_id,
@@ -372,6 +411,32 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
     db.commit()
     db.refresh(turn)
     return turn
+
+
+@router.get("/interviews/{interview_id}/qna-map")
+def qna_map(interview_id: UUID, db: Session = Depends(get_db)):
+    turns = db.execute(
+        select(InterviewTurnLog)
+        .where(InterviewTurnLog.interview_id == interview_id)
+        .order_by(InterviewTurnLog.created_at.asc())
+    ).scalars().all()
+
+    pairs: list[dict] = []
+    current_q = None
+    for turn in turns:
+        if turn.role == "assistant":
+            current_q = {"question": turn.content, "answers": []}
+            pairs.append(current_q)
+            continue
+        if turn.role == "candidate":
+            if current_q is None:
+                current_q = {"question": "", "answers": []}
+                pairs.append(current_q)
+            current_q["answers"].append(
+                {"content": turn.content, "analysis": turn.analysis, "score": turn.score}
+            )
+
+    return {"interview_id": str(interview_id), "qna_pairs": pairs}
 
 
 @router.post("/interviews/send-link", response_model=SendInterviewLinkResponse)

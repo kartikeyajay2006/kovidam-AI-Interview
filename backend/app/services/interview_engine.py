@@ -9,54 +9,15 @@ from app.core.config import get_settings
 
 
 QUESTION_BANK = [
-    {
-        "main": "Tell me about a project you are most proud of.",
-        "followups": [
-            "What problem was this project solving?",
-            "What was your exact contribution?",
-            "What technical challenge did you face, and how did you solve it?",
-        ],
-    },
-    {
-        "main": "Explain a time when your code or solution failed.",
-        "followups": [
-            "How did you debug the issue?",
-            "What did you learn from that failure?",
-            "What would you do differently now?",
-        ],
-    },
-    {
-        "main": "How would you design a URL shortener like Bitly?",
-        "followups": [
-            "How would you generate unique short URLs?",
-            "How would you handle millions of requests?",
-            "How would you store analytics data?",
-        ],
-    },
-    {
-        "main": "Given a very large dataset, how would you find duplicate entries efficiently?",
-        "followups": [
-            "What data structure would you use?",
-            "What is the time and space complexity?",
-            "What changes if the dataset cannot fit into memory?",
-        ],
-    },
-    {
-        "main": "Tell me about a situation where you worked in a team and faced conflict.",
-        "followups": [
-            "How did you handle the disagreement?",
-            "What was the final outcome?",
-            "What did you learn about teamwork?",
-        ],
-    },
-    {
-        "main": "Why do you want to join this company/startup?",
-        "followups": [
-            "What excites you about our product?",
-            "How do your skills align with this role?",
-            "What kind of work environment helps you perform best?",
-        ],
-    },
+    {"main": "Tell me about a project you built recently."},
+    {"main": "How do you debug an issue when your code is not working?"},
+    {"main": "Explain the difference between frontend and backend development."},
+    {"main": "What happens when you type a URL into a browser?"},
+    {"main": "What is version control and why is Git important?"},
+    {"main": "How do APIs work?"},
+    {"main": "What is the difference between SQL and NoSQL databases?"},
+    {"main": "How do you write clean and maintainable code?"},
+    {"main": "Describe a time when you worked in a team on a technical project."},
 ]
 
 PII_LINE_HINTS = ("email", "mail", "phone", "mobile", "address", "location", "contact", "github.com", "linkedin.com")
@@ -85,78 +46,10 @@ def _sanitize_resume_text(resume_text: str) -> str:
     return "\n".join(safe_lines)
 
 
-def _resume_personalized_openers(resume_text: str, resume_skills: str) -> list[str]:
-    safe_resume_text = _sanitize_resume_text(resume_text)
-    skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
-    highlights = _extract_resume_highlights(safe_resume_text)
-    openers: list[str] = []
-    if highlights:
-        openers.append(
-            f"Your resume highlights this project: '{highlights[0]}'. Walk me through the problem, your exact contribution, and one tough technical challenge you solved."
-        )
-    if len(highlights) > 1:
-        openers.append(
-            f"You also mention '{highlights[1]}'. What trade-offs did you make, and how did you validate the final approach?"
-        )
-    if skills:
-        openers.append(
-            f"You list {skills[0]}. Tell me about a production use-case where you used it and what failed initially."
-        )
-    return openers[:2]
-
-
 def _extract_resume_highlights(resume_text: str) -> list[str]:
     lines = [line.strip(" -\t") for line in (resume_text or "").splitlines()]
     cleaned = [line for line in lines if 20 <= len(line) <= 180]
     return cleaned[:6]
-
-
-def _fallback_question(
-    role_title: str,
-    resume_skills: str,
-    resume_text: str,
-    history: list[dict],
-) -> tuple[str, str]:
-    skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
-    highlights = _extract_resume_highlights(_sanitize_resume_text(resume_text))
-    last_candidate_answer = ""
-    for turn in reversed(history):
-        if turn.get("role") == "candidate" and turn.get("content"):
-            last_candidate_answer = turn["content"][:240]
-            break
-
-    if not history:
-        if highlights:
-            return (
-                f"Your resume mentions: '{highlights[0]}'. Can you walk me through your exact contribution and impact?",
-                "Resume-grounded opening question.",
-            )
-        if skills:
-            return (
-                f"Pick one project where you used {skills[0]} and explain architecture, scale, and one production issue.",
-                "Skill-grounded opening question.",
-            )
-        return (
-            f"For the {role_title} role, describe your strongest project and the toughest technical challenge you solved.",
-            "General opening question.",
-        )
-
-    if last_candidate_answer:
-        return (
-            "In your previous answer, what trade-off did you choose, and what alternative did you reject?",
-            "Adaptive follow-up based on candidate answer.",
-        )
-
-    if len(skills) > 1:
-        return (
-            f"How did you combine {skills[0]} with {skills[1]} in a real production workflow, and what bottleneck appeared?",
-            "Cross-skill depth follow-up.",
-        )
-
-    return (
-        f"If you had to redesign your most recent system for 10x traffic, what would you change first and why?",
-        "System design pressure follow-up.",
-    )
 
 
 def _trim_history(history: Iterable[dict]) -> list[dict]:
@@ -166,87 +59,429 @@ def _trim_history(history: Iterable[dict]) -> list[dict]:
         content = (turn.get("content") or "").strip()
         if role in {"assistant", "candidate"} and content:
             trimmed.append({"role": role, "content": content[:1000]})
-    return trimmed[-8:]
+    return trimmed[-12:]
 
 
 def _normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
-def _next_question_from_bank(cleaned_history: list[dict]) -> tuple[str, str]:
-    bank_map = {}
-    for idx, item in enumerate(QUESTION_BANK):
-        bank_map[_normalize(item["main"])] = (idx, "main")
-        for fup in item["followups"]:
-            bank_map[_normalize(fup)] = (idx, "followup")
+def _build_default_human_bank() -> list[dict]:
+    items: list[dict] = []
+    for idx, entry in enumerate(QUESTION_BANK, start=1):
+        items.append(
+            {
+                "id": f"Q{idx:02d}",
+                "question": entry["main"],
+                "type": "main",
+                "difficulty": "medium",
+                "competency_bucket": "technical_depth",
+            }
+        )
+    return items
 
+
+def _extract_parsed_sections(parsed_resume_json: dict) -> dict:
+    data = parsed_resume_json.get("data") if isinstance(parsed_resume_json, dict) else {}
+    if not isinstance(data, dict):
+        return {"skills": [], "projects": [], "experience": [], "work_experience_years": ""}
+
+    skills = []
+    skills_section = data.get("skills_section", {})
+    if isinstance(skills_section, dict) and isinstance(skills_section.get("items"), list):
+        skills = [str(s).strip() for s in skills_section["items"] if str(s).strip()][:40]
+
+    projects = []
+    projects_section = data.get("projects_section", {})
+    if isinstance(projects_section, dict) and isinstance(projects_section.get("items"), list):
+        for item in projects_section["items"][:8]:
+            if isinstance(item, dict):
+                projects.append(
+                    {
+                        "title": str(item.get("title") or "").strip(),
+                        "description": str(item.get("description") or "").strip(),
+                        "tech_stack": item.get("tech_stack") if isinstance(item.get("tech_stack"), list) else [],
+                        "highlights": item.get("highlights") if isinstance(item.get("highlights"), list) else [],
+                    }
+                )
+
+    experience = []
+    experience_section = data.get("experience_section", {})
+    if isinstance(experience_section, dict) and isinstance(experience_section.get("items"), list):
+        for item in experience_section["items"][:10]:
+            if isinstance(item, dict):
+                experience.append(item)
+            elif isinstance(item, str) and item.strip():
+                experience.append({"summary": item.strip()})
+
+    return {
+        "skills": skills,
+        "projects": projects,
+        "experience": experience,
+        "work_experience_years": str(data.get("work_experience_years") or "").strip(),
+    }
+
+
+def _infer_bucket(text: str) -> str:
+    t = _normalize(text)
+    if any(k in t for k in ("design", "architecture", "scale", "throughput", "latency")):
+        return "system_design"
+    if any(k in t for k in ("debug", "failed", "failure", "incident", "bug")):
+        return "debugging"
+    if any(k in t for k in ("trade-off", "complexity", "data structure", "algorithm")):
+        return "problem_solving"
+    if any(k in t for k in ("team", "conflict", "ownership", "collaborat")):
+        return "ownership_communication"
+    return "technical_depth"
+
+
+def _build_coverage_state(cleaned_history: list[dict]) -> dict:
+    covered: dict[str, int] = {}
+    for turn in cleaned_history:
+        if turn.get("role") != "assistant":
+            continue
+        bucket = _infer_bucket(turn.get("content", ""))
+        covered[bucket] = covered.get(bucket, 0) + 1
+    priority = ["technical_depth", "problem_solving", "debugging", "system_design", "ownership_communication"]
+    uncovered = [b for b in priority if b not in covered]
+    return {"covered_counts": covered, "uncovered_priority": uncovered}
+
+
+def _is_repetitive(candidate_question: str, asked_questions: list[str]) -> bool:
+    q_norm = _normalize(candidate_question)
+    if not q_norm:
+        return True
+    q_tokens = set(q_norm.split())
+    for asked in asked_questions:
+        a_norm = _normalize(asked)
+        if not a_norm:
+            continue
+        if q_norm == a_norm:
+            return True
+        a_tokens = set(a_norm.split())
+        overlap = len(q_tokens & a_tokens)
+        denom = max(1, min(len(q_tokens), len(a_tokens)))
+        if overlap / denom >= 0.8:
+            return True
+    return False
+
+
+def _fallback_question(role_title: str, resume_skills: str, resume_text: str, history: list[dict]) -> tuple[str, str]:
+    skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
+    highlights = _extract_resume_highlights(_sanitize_resume_text(resume_text))
+
+    if not history:
+        if highlights:
+            return (
+                f"Your resume mentions: '{highlights[0]}'. Can you walk me through your exact contribution and impact?",
+                "Fallback resume-grounded opening question.",
+            )
+        if skills:
+            return (
+                f"Pick one project where you used {skills[0]} and explain architecture, scale, and one production issue.",
+                "Fallback skill-grounded opening question.",
+            )
+        return (
+            f"For the {role_title} role, describe your strongest project and the toughest technical challenge you solved.",
+            "Fallback general opening question.",
+        )
+
+    return (
+        "In your previous answer, what trade-off did you choose, and what alternative did you reject?",
+        "Fallback adaptive follow-up.",
+    )
+
+
+def _select_current_main(asked_assistant_questions: list[str], bank: list[dict]) -> tuple[int, str]:
+    main_questions = [b["question"] for b in bank if b.get("type") == "main" and b.get("question")]
+    if not main_questions:
+        return 0, "Tell me about a project you built recently."
+    asked = [_normalize(a) for a in asked_assistant_questions]
+    for idx, q in enumerate(main_questions):
+        if _normalize(q) not in asked:
+            return idx, q
+    return len(main_questions) - 1, main_questions[-1]
+
+
+def _count_followups_after_main(cleaned_history: list[dict], main_question: str) -> int:
+    norm_main = _normalize(main_question)
     assistant_turns = [t for t in cleaned_history if t.get("role") == "assistant"]
-    recognized = []
-    for t in assistant_turns:
-        key = _normalize(t.get("content", ""))
-        if key in bank_map:
-            recognized.append((bank_map[key][0], bank_map[key][1], key))
+    pos = -1
+    for i, t in enumerate(assistant_turns):
+        if _normalize(t.get("content", "")) == norm_main:
+            pos = i
+    if pos == -1:
+        return 0
+    return max(0, len(assistant_turns) - pos - 1)
 
-    if not recognized:
-        first = QUESTION_BANK[0]["main"]
-        return first, "Main question 1/6."
 
-    last_main_idx, _, _ = recognized[-1]
-    tail_same_main = []
-    for rec in reversed(recognized):
-        if rec[0] != last_main_idx:
-            break
-        tail_same_main.append(rec)
-    tail_same_main.reverse()
-
-    asked_followup_keys = {key for _, kind, key in tail_same_main if kind == "followup"}
-    followup_count = len(asked_followup_keys)
-    target_followups = 1 + (last_main_idx % 2)  # deterministic: 1 or 2 per main
-
-    if followup_count < target_followups:
-        candidates = [
-            f for f in QUESTION_BANK[last_main_idx]["followups"] if _normalize(f) not in asked_followup_keys
+def _generate_ai_followups(
+    *,
+    settings,
+    main_question: str,
+    role_title: str,
+    job_description: str,
+    interview_type: str,
+    difficulty: str,
+    parsed_sections: dict,
+    cleaned_history: list[dict],
+) -> list[str]:
+    if not settings.groq_api_key:
+        return [
+            "What was the hardest technical challenge in that context?",
+            "What would you improve if you rebuilt it today?",
         ]
-        if candidates:
-            return random.choice(candidates), f"Random follow-up {followup_count + 1}/{target_followups}."
 
-    next_main_idx = min(last_main_idx + 1, len(QUESTION_BANK) - 1)
-    if next_main_idx == last_main_idx:
-        candidates = [
-            f for f in QUESTION_BANK[last_main_idx]["followups"] if _normalize(f) not in asked_followup_keys
-        ]
-        if candidates:
-            return random.choice(candidates), "Additional follow-up for deeper assessment."
-        return QUESTION_BANK[last_main_idx]["main"], "Re-asking final main question for clarity."
+    prompt = {
+        "task": "Generate exactly 2 technical follow-up interview questions.",
+        "main_question": main_question,
+        "job_context": {
+            "role_title": role_title,
+            "job_description": (job_description or "")[:3000],
+            "interview_type": interview_type,
+            "difficulty": difficulty,
+        },
+        "candidate_context": {
+            "skills": parsed_sections.get("skills", []),
+            "projects": parsed_sections.get("projects", []),
+            "experience": parsed_sections.get("experience", []),
+            "work_experience_years": parsed_sections.get("work_experience_years", ""),
+        },
+        "history": cleaned_history[-10:],
+        "constraints": [
+            "Return strict JSON only",
+            "Do not repeat earlier asked questions",
+            "Ask concrete, technical, evaluable questions",
+            "Follow-ups must directly deepen the main question",
+        ],
+        "output_schema": {"followups": ["q1", "q2"]},
+    }
 
-    return QUESTION_BANK[next_main_idx]["main"], f"Main question {next_main_idx + 1}/{len(QUESTION_BANK)}."
+    body = {
+        "model": settings.groq_model,
+        "messages": [
+            {"role": "system", "content": "You are a senior technical interviewer. Return strict JSON only."},
+            {"role": "user", "content": json.dumps(prompt)},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 180,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"},
+                json=body,
+            )
+            resp.raise_for_status()
+            parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
+            followups = parsed.get("followups", [])
+            if isinstance(followups, list):
+                cleaned = [str(f).strip() for f in followups if str(f).strip()]
+                if len(cleaned) >= 2:
+                    return cleaned[:2]
+    except Exception:
+        pass
+    return [
+        "What was the hardest technical challenge in that context?",
+        "What would you improve if you rebuilt it today?",
+    ]
 
 
 def generate_interview_question(
     *,
     role_title: str,
+    job_description: str,
+    interview_type: str,
+    difficulty: str,
     resume_text: str,
     resume_skills: str,
+    parsed_resume_json: dict,
+    human_question_bank: list[dict],
     history: list[dict],
 ) -> tuple[str, str]:
     cleaned_history = _trim_history(history)
-    if not cleaned_history:
-        personalized = _resume_personalized_openers(resume_text, resume_skills)
-        if personalized:
-            return personalized[0], "Personalized opener from resume/projects."
-        return QUESTION_BANK[0]["main"], "Main question 1/6."
+    settings = get_settings()
 
-    # Ask 1 additional personalized question before moving to fixed bank if available.
-    assistant_count = len([t for t in cleaned_history if t.get("role") == "assistant"])
-    if assistant_count == 1:
-        personalized = _resume_personalized_openers(resume_text, resume_skills)
-        if len(personalized) > 1:
-            return personalized[1], "Second personalized resume-based question."
+    bank = human_question_bank if human_question_bank else _build_default_human_bank()
+    parsed_sections = _extract_parsed_sections(parsed_resume_json)
+    safe_resume_text = _sanitize_resume_text(resume_text)[:4000]
+    asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
+    last_candidate_answer = ""
+    for t in reversed(cleaned_history):
+        if t.get("role") == "candidate" and t.get("content"):
+            last_candidate_answer = t["content"][:800]
+            break
+    coverage_state = _build_coverage_state(cleaned_history)
 
-    return _next_question_from_bank(cleaned_history)
+    main_questions = [b["question"] for b in bank if b.get("type") == "main" and b.get("question")]
+    if not main_questions:
+        main_questions = [q["main"] for q in QUESTION_BANK]
+
+    # Enforced interview rhythm:
+    # Main Q -> AI Follow-up 1 -> AI Follow-up 2 -> Next Main Q
+    asked_norm = [_normalize(q) for q in asked_questions]
+    current_main_idx = 0
+    current_main_question = main_questions[0]
+    for idx, mq in enumerate(main_questions):
+        if _normalize(mq) not in asked_norm:
+            current_main_idx = idx
+            current_main_question = mq
+            break
+    else:
+        current_main_idx = len(main_questions) - 1
+        current_main_question = main_questions[-1]
+
+    if _normalize(current_main_question) not in asked_norm:
+        return current_main_question, f"Main question {current_main_idx + 1}/{len(main_questions)}."
+
+    followups_done = _count_followups_after_main(cleaned_history, current_main_question)
+
+    followups = _generate_ai_followups(
+        settings=settings,
+        main_question=current_main_question,
+        role_title=role_title,
+        job_description=job_description,
+        interview_type=interview_type,
+        difficulty=difficulty,
+        parsed_sections=parsed_sections,
+        cleaned_history=cleaned_history,
+    )
+    if followups_done < 2:
+        next_fup = followups[followups_done]
+        if not _is_repetitive(next_fup, asked_questions):
+            return next_fup, f"AI follow-up {followups_done + 1}/2 for main question {current_main_idx + 1}."
+        # If generated follow-up repeats, use a deterministic safe fallback follow-up.
+        safe_followup = (
+            "What was the hardest technical challenge in that context?"
+            if followups_done == 0
+            else "What would you improve if you rebuilt it today?"
+        )
+        return safe_followup, f"Fallback follow-up {followups_done + 1}/2 for main question {current_main_idx + 1}."
+
+    # Exactly after 2 follow-ups, move to next main question.
+    next_main_idx = current_main_idx + 1
+    if next_main_idx < len(main_questions):
+        return main_questions[next_main_idx], f"Main question {next_main_idx + 1}/{len(main_questions)}."
+
+    if not settings.groq_api_key:
+        return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
+
+    payload = {
+        "job_context": {
+            "title": role_title,
+            "description": (job_description or "")[:4000],
+            "interview_type": interview_type,
+            "difficulty": difficulty,
+        },
+        "candidate_context": {
+            "parsed_resume": {
+                "skills_section": {"items": parsed_sections["skills"]},
+                "projects_section": {"items": parsed_sections["projects"]},
+                "experience_section": {"items": parsed_sections["experience"]},
+                "work_experience_years": parsed_sections["work_experience_years"],
+            },
+            "resume_skills_csv": resume_skills,
+            "resume_text_excerpt": safe_resume_text,
+        },
+        "human_question_bank": bank,
+        "interview_runtime_state": {
+            "history": cleaned_history,
+            "asked_questions": asked_questions,
+            "last_candidate_answer": last_candidate_answer,
+            "coverage_state": coverage_state,
+        },
+        "instruction_policy": {
+            "goal": "Pick next best technical interview question",
+            "constraints": [
+                "Use JD + skills/projects/experience context",
+                "Avoid repeating previously asked questions",
+                "Ask exactly one clear question",
+                "Prefer deeper probing when candidate answers are strong",
+                "If weak signal, ask evidence-seeking clarification",
+                "Question must be concrete, specific, and technically evaluable",
+                "No generic motivation or culture-fit unless explicitly asked by interviewer stage",
+                "Prioritize uncovered competency buckets first",
+            ],
+            "allow_question_rewrite_from_human_bank": True,
+            "strict_json_only": True,
+        },
+        "required_output_schema": {
+            "question_id": "string",
+            "question": "string",
+            "why_this_question_now": "string",
+            "target_skill": "string",
+            "competency_bucket": "string",
+            "difficulty": "easy|medium|hard",
+            "expected_signal": "string",
+            "follow_up_if_strong": "string",
+            "follow_up_if_weak": "string",
+            "anti_repeat_key": "string",
+        },
+    }
+
+    request_body = {
+        "model": settings.groq_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                "You are a senior technical interviewer. "
+                    "Return strict JSON only with the exact keys from required_output_schema. "
+                    "Produce one high-quality technical question only."
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload)},
+        ],
+        "temperature": 0.15,
+        "max_tokens": 420,
+        "response_format": {"type": "json_object"},
+    }
+
+    try:
+        with httpx.Client(timeout=25) as client:
+            response = client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.groq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request_body,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+
+            question = str(parsed.get("question") or "").strip()
+            if not question:
+                return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
+            if _is_repetitive(question, asked_questions):
+                return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
+            if len(question.split()) < 7:
+                return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
+
+            rationale = str(parsed.get("why_this_question_now") or "").strip() or "LLM-selected next best question."
+            target_skill = str(parsed.get("target_skill") or "").strip()
+            bucket = str(parsed.get("competency_bucket") or "").strip()
+            qid = str(parsed.get("question_id") or "").strip()
+            difficulty_out = str(parsed.get("difficulty") or "").strip()
+
+            final_rationale = (
+                f"{rationale} "
+                f"[question_id={qid or 'n/a'} | skill={target_skill or 'n/a'} | bucket={bucket or 'n/a'} | difficulty={difficulty_out or 'n/a'}]"
+            )
+            return question[:500], final_rationale[:1000]
+    except Exception:
+        return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
 
 
-def analyze_candidate_answer(answer: str, role_title: str) -> tuple[str, float]:
+def analyze_candidate_answer(
+    answer: str,
+    role_title: str,
+    candidate_info: dict | None = None,
+    full_history: list[dict] | None = None,
+) -> tuple[str, float]:
     cleaned = (answer or "").strip()
     if not cleaned:
         return "No answer provided.", 0.0
@@ -262,6 +497,8 @@ def analyze_candidate_answer(answer: str, role_title: str) -> tuple[str, float]:
 
     prompt = {
         "role_title": role_title,
+        "candidate_info": candidate_info or {},
+        "interview_history_from_start": (full_history or [])[-80:],
         "candidate_answer": cleaned[:2000],
         "instruction": (
             "Analyze the candidate answer deeply. Evaluate communication, technical knowledge, confidence, "
@@ -280,14 +517,14 @@ def analyze_candidate_answer(answer: str, role_title: str) -> tuple[str, float]:
         ),
     }
 
-    payload = {
+    request_body = {
         "model": settings.groq_model,
         "messages": [
             {"role": "system", "content": "You are a strict technical interview evaluator."},
             {"role": "user", "content": json.dumps(prompt)},
         ],
         "temperature": 0.2,
-        "max_tokens": 200,
+        "max_tokens": 220,
         "response_format": {"type": "json_object"},
     }
 
@@ -299,11 +536,10 @@ def analyze_candidate_answer(answer: str, role_title: str) -> tuple[str, float]:
                     "Authorization": f"Bearer {settings.groq_api_key}",
                     "Content-Type": "application/json",
                 },
-                json=payload,
+                json=request_body,
             )
             response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
+            content = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             analysis = (parsed.get("analysis") or "").strip() or "No analysis."
             score = float(parsed.get("score", 0.0))
