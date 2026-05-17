@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, Job
+from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, Job, Resume
 from app.schemas.recruiter import (
     BulkInviteResponse,
     CandidateCreate,
@@ -95,9 +95,17 @@ def _build_resume_context(parsed_resume_json: dict) -> tuple[str, str]:
 
 
 def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple[bool, str]:
-    target_email = candidate.email
+    target_email = candidate.email.strip()
     if not is_deliverable_email(target_email):
-        return False, f"{candidate.name}: invalid recipient email"
+        latest_resume = db.execute(
+            select(Resume).where(Resume.candidate_id == candidate.id).order_by(Resume.created_at.desc())
+        ).scalars().first()
+        if latest_resume and latest_resume.extracted_email and is_deliverable_email(latest_resume.extracted_email.strip()):
+            target_email = latest_resume.extracted_email.strip()
+            candidate.email = target_email
+            db.commit()
+        else:
+            return False, f"{candidate.name}: invalid recipient email"
 
     interview = InterviewSession(candidate_id=candidate.id, job_id=job.id, status="scheduled")
     db.add(interview)

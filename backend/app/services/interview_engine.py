@@ -1,5 +1,6 @@
 import json
 import random
+import re
 from typing import Iterable
 
 import httpx
@@ -58,14 +59,40 @@ QUESTION_BANK = [
     },
 ]
 
+PII_LINE_HINTS = ("email", "mail", "phone", "mobile", "address", "location", "contact", "github.com", "linkedin.com")
+
+
+def _redact_pii(text: str) -> str:
+    cleaned = text or ""
+    cleaned = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[redacted-email]", cleaned)
+    cleaned = re.sub(r"(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{3,5}\)?[\s-]?)?\d{3,5}[\s-]?\d{3,5}", "[redacted-number]", cleaned)
+    cleaned = re.sub(r"\b\d{6}\b", "[redacted-postal-code]", cleaned)
+    return cleaned
+
+
+def _is_probable_contact_line(line: str) -> bool:
+    lowered = (line or "").lower()
+    return any(hint in lowered for hint in PII_LINE_HINTS)
+
+
+def _sanitize_resume_text(resume_text: str) -> str:
+    safe_lines: list[str] = []
+    for raw in (resume_text or "").splitlines():
+        line = _redact_pii(raw).strip(" -\t")
+        if not line or _is_probable_contact_line(line):
+            continue
+        safe_lines.append(line)
+    return "\n".join(safe_lines)
+
 
 def _resume_personalized_openers(resume_text: str, resume_skills: str) -> list[str]:
+    safe_resume_text = _sanitize_resume_text(resume_text)
     skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
-    highlights = _extract_resume_highlights(resume_text)
+    highlights = _extract_resume_highlights(safe_resume_text)
     openers: list[str] = []
     if highlights:
         openers.append(
-            f"In your resume you mention '{highlights[0]}'. Walk me through the problem, your exact contribution, and one tough technical challenge you solved."
+            f"Your resume highlights this project: '{highlights[0]}'. Walk me through the problem, your exact contribution, and one tough technical challenge you solved."
         )
     if len(highlights) > 1:
         openers.append(
@@ -91,7 +118,7 @@ def _fallback_question(
     history: list[dict],
 ) -> tuple[str, str]:
     skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
-    highlights = _extract_resume_highlights(resume_text)
+    highlights = _extract_resume_highlights(_sanitize_resume_text(resume_text))
     last_candidate_answer = ""
     for turn in reversed(history):
         if turn.get("role") == "candidate" and turn.get("content"):
@@ -116,7 +143,7 @@ def _fallback_question(
 
     if last_candidate_answer:
         return (
-            f"You mentioned '{last_candidate_answer}'. What trade-off did you choose, and what alternative did you reject?",
+            "In your previous answer, what trade-off did you choose, and what alternative did you reject?",
             "Adaptive follow-up based on candidate answer.",
         )
 

@@ -7,14 +7,19 @@ from app.core.config import get_settings
 
 def send_interview_email(to_email: str, candidate_name: str, job_title: str, interview_link: str) -> None:
     settings = get_settings()
+    recipient = to_email.strip()
 
     if not settings.smtp_host or not settings.smtp_username or not settings.smtp_password or not settings.smtp_from_email:
         raise ValueError("SMTP configuration is incomplete")
+    if not recipient or "@" not in recipient:
+        raise ValueError("Recipient email is invalid")
+    if settings.smtp_use_ssl and settings.smtp_use_tls:
+        raise ValueError("Use either SMTP_USE_SSL=true or SMTP_USE_TLS=true, not both")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"Interview Invitation - {job_title}"
     msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
-    msg["To"] = to_email
+    msg["To"] = recipient
 
     text = f"""Interview Invitation
 
@@ -94,8 +99,19 @@ Best,
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as server:
-        if settings.smtp_use_tls:
-            server.starttls()
-        server.login(settings.smtp_username, settings.smtp_password)
-        server.sendmail(settings.smtp_from_email, [to_email], msg.as_string())
+    try:
+        if settings.smtp_use_ssl:
+            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=20) as server:
+                server.login(settings.smtp_username, settings.smtp_password)
+                server.sendmail(settings.smtp_from_email, [recipient], msg.as_string())
+            return
+
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as server:
+            server.ehlo()
+            if settings.smtp_use_tls:
+                server.starttls()
+                server.ehlo()
+            server.login(settings.smtp_username, settings.smtp_password)
+            server.sendmail(settings.smtp_from_email, [recipient], msg.as_string())
+    except smtplib.SMTPException as exc:
+        raise RuntimeError(f"SMTP send failed: {exc}") from exc

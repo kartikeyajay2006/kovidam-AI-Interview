@@ -13,7 +13,6 @@ Run this from the project root (works on any laptop path, no hardcoded directory
 ```bash
 cp backend/.env.example backend/.env && cp frontend/.env.local frontend/.env.local.bak 2>/dev/null || true; cd frontend && npm install && cd .. && docker compose up -d --build && until curl -sf http://localhost:8000/api/v1/health/live; do sleep 1; done && echo "Backend is live" && cd frontend && npm run dev
 ```
-
 This command does:
 1. Prepares backend env file from template.
 2. Installs frontend cdependencies.
