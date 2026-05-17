@@ -115,60 +115,62 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
   }
 
   return (
-    <section className="glass mt-6 rounded-2xl p-8">
-      <h2 className="text-2xl font-bold tracking-tight">Recruiter Actions</h2>
-      <p className="mt-2 text-sm text-[#9CA3AF]">Create role, add candidates with parsed JSON, and send interview invites.</p>
+    <section className="glass-card mt-6 rounded-2xl p-8 border border-slate-200 shadow-sm">
+      <h2 className="text-2xl font-bold tracking-tight text-slate-900">Recruiter Actions</h2>
+      <p className="mt-2 text-sm text-slate-500">Create role, add candidates with parsed JSON, and send interview invites.</p>
 
       <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
-        <form onSubmit={createJob} className="mesh card-hover space-y-3 rounded-xl border border-white/[0.07] bg-white/[0.01] p-4">
-          <p className="font-semibold">1. Create Job</p>
-          <input className="w-full rounded border border-white/[0.07] bg-black/50 p-2" placeholder="Job title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} required />
-          <textarea className="w-full rounded border border-white/[0.07] bg-black/50 p-2" placeholder="Description" value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} required />
+        <form onSubmit={createJob} className="card-hover space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md hover:border-teal-200">
+          <p className="font-bold text-slate-800">1. Create Job</p>
+          <input className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" placeholder="Job title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} required />
+          <textarea className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" placeholder="Description" value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} required />
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setJobKind("job")}
-              className={`mono rounded-full px-3 py-2 text-[11px] tracking-[0.18em] ${jobKind === "job" ? "bg-white text-black" : "border border-white/[0.12] bg-transparent text-white/70"}`}
+              className={`mono rounded-full px-4 py-2 text-[11px] font-bold tracking-[0.1em] uppercase transition ${jobKind === "job" ? "bg-slate-800 text-white shadow-md" : "border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
             >
               Job
             </button>
             <button
               type="button"
               onClick={() => setJobKind("internship")}
-              className={`mono rounded-full px-3 py-2 text-[11px] tracking-[0.18em] ${jobKind === "internship" ? "bg-white text-black" : "border border-white/[0.12] bg-transparent text-white/70"}`}
+              className={`mono rounded-full px-4 py-2 text-[11px] font-bold tracking-[0.1em] uppercase transition ${jobKind === "internship" ? "bg-slate-800 text-white shadow-md" : "border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"}`}
             >
               Internship
             </button>
           </div>
-          <button className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black">Create Job</button>
+          <button className="rounded-full bg-teal-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-teal-600/20 hover:bg-teal-700 transition w-full">Create Job</button>
         </form>
 
-        <form onSubmit={createCandidate} className="mesh card-hover space-y-3 rounded-xl border border-white/[0.07] bg-white/[0.01] p-4">
-          <p className="font-semibold">2. Add Candidate</p>
-          <select className="w-full rounded border border-white/[0.07] bg-black/50 p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
+        <form onSubmit={createCandidate} className="card-hover space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md hover:border-teal-200">
+          <p className="font-bold text-slate-800">2. Add Candidate</p>
+          <select className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
+            <option value="" disabled>Select a role...</option>
             {jobs.map((j) => (
               <option key={j.id} value={j.id}>{j.title}</option>
             ))}
           </select>
-          <textarea className="mono w-full rounded border border-white/[0.07] bg-black/50 p-2 text-xs" rows={10} placeholder="Paste parsed resume JSON" value={parsedResumeJson} onChange={(e) => setParsedResumeJson(e.target.value)} />
-          <button disabled={!canCreateCandidate} className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50">
+          <textarea className="mono w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" rows={9} placeholder="Paste parsed resume JSON" value={parsedResumeJson} onChange={(e) => setParsedResumeJson(e.target.value)} />
+          <button disabled={!canCreateCandidate} className="rounded-full bg-teal-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-teal-600/20 hover:bg-teal-700 transition w-full disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-teal-600">
             Add Candidate
           </button>
         </form>
 
-        <form onSubmit={sendInterviewMailToRole} className="mesh card-hover space-y-3 rounded-xl border border-white/[0.07] bg-white/[0.01] p-4">
-          <p className="font-semibold">3. Send Interview Mail</p>
-          <select className="w-full rounded border border-white/[0.07] bg-black/50 p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
+        <form onSubmit={sendInterviewMailToRole} className="card-hover space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md hover:border-teal-200">
+          <p className="font-bold text-slate-800">3. Send Interview Mail</p>
+          <select className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
+            <option value="" disabled>Select a role...</option>
             {jobs.map((j) => (
               <option key={j.id} value={j.id}>{j.title}</option>
             ))}
           </select>
-          <p className="text-xs text-[#9CA3AF]">Sends secure interview links to all candidates under selected role.</p>
-          <button className="rounded-full border border-white/[0.14] px-4 py-2 text-sm text-white shadow-[0_2px_10px_rgba(255,255,255,0.1)] transition hover:border-white/[0.24]">Send Invite to All</button>
+          <p className="text-sm text-slate-500 leading-relaxed">Sends secure interview links to all candidates under selected role.</p>
+          <button className="rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:border-slate-400 w-full mt-auto">Send Invite to All</button>
         </form>
       </div>
 
-      {status ? <p className="mt-4 text-sm text-[#9CA3AF] break-all">{status}</p> : null}
+      {status ? <p className="mt-6 text-sm font-medium text-teal-600 bg-teal-50 px-4 py-3 rounded-lg border border-teal-100 break-all">{status}</p> : null}
     </section>
   );
 }
