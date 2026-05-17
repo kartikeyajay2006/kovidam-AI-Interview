@@ -18,11 +18,18 @@ async function fetchWithFallback(path: string, init?: RequestInit): Promise<Resp
 export default function DashboardControls({ jobs }: { jobs: Job[] }) {
   const [jobTitle, setJobTitle] = useState("");
   const [jobDesc, setJobDesc] = useState("");
+  const [candidateName, setCandidateName] = useState("");
+  const [candidateEmail, setCandidateEmail] = useState("");
+  const [candidatePhone, setCandidatePhone] = useState("");
+  const [candidateSkills, setCandidateSkills] = useState("");
+  const [parsedResumeJson, setParsedResumeJson] = useState("");
   const [selectedJobId, setSelectedJobId] = useState(jobs[0]?.id || "");
-  const [files, setFiles] = useState<File[]>([]);
   const [status, setStatus] = useState("");
 
-  const canUpload = useMemo(() => Boolean(selectedJobId && files.length > 0), [selectedJobId, files.length]);
+  const canCreateCandidate = useMemo(
+    () => Boolean(selectedJobId && candidateName.trim() && candidateEmail.trim()),
+    [selectedJobId, candidateName, candidateEmail]
+  );
 
   async function createJob(e: FormEvent) {
     e.preventDefault();
@@ -50,36 +57,45 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
     }
   }
 
-  async function uploadResume(e: FormEvent) {
+  async function createCandidate(e: FormEvent) {
     e.preventDefault();
     try {
-      if (!files.length) {
-        setStatus("Please choose at least one PDF or DOCX file.");
-        return;
-      }
       if (!selectedJobId) {
         setStatus("Please select a role first.");
         return;
       }
-
-      let successCount = 0;
-      for (const file of files) {
-        const form = new FormData();
-        form.append("job_id", selectedJobId);
-        form.append("file", file);
-        setStatus(`Uploading ${file.name}...`);
-        const res = await fetchWithFallback("/resumes/upload-and-register", { method: "POST", body: form });
-        if (!res.ok) {
-          const t = await res.text();
-          setStatus(`Upload failed (${res.status}) for ${file.name}: ${t}`);
+      let parsed: Record<string, unknown> = {};
+      if (parsedResumeJson.trim()) {
+        try {
+          parsed = JSON.parse(parsedResumeJson);
+        } catch {
+          setStatus("Parsed resume JSON is invalid.");
           return;
         }
-        successCount += 1;
       }
-      setStatus(`${successCount} resume(s) uploaded and candidate profiles auto-created. Refreshing...`);
+
+      setStatus("Creating candidate...");
+      const res = await fetchWithFallback("/candidates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_id: selectedJobId,
+          name: candidateName,
+          email: candidateEmail,
+          phone: candidatePhone,
+          skills: candidateSkills,
+          parsed_resume_json: parsed,
+        }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        setStatus(`Failed to create candidate (${res.status}): ${payload.detail || "unknown error"}`);
+        return;
+      }
+      setStatus("Candidate created. Refreshing...");
       window.location.reload();
     } catch (err) {
-      setStatus(`Upload failed: ${(err as Error).message}`);
+      setStatus(`Create candidate failed: ${(err as Error).message}`);
     }
   }
 
@@ -111,7 +127,7 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
   return (
     <section className="glass mt-6 rounded-2xl p-8">
       <h2 className="text-2xl font-semibold">Recruiter Actions</h2>
-      <p className="mt-2 text-sm text-muted">Create role, upload shortlisted resumes, and send interview invites to all auto-detected candidates.</p>
+      <p className="mt-2 text-sm text-muted">Create role, add candidates with parsed JSON, and send interview invites.</p>
 
       <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
         <form onSubmit={createJob} className="space-y-3 rounded-xl border border-muted/20 p-4">
@@ -121,24 +137,20 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
           <button className="rounded bg-accent px-3 py-2 text-black">Create Job</button>
         </form>
 
-        <form onSubmit={uploadResume} className="space-y-3 rounded-xl border border-muted/20 p-4">
-          <p className="font-semibold">2. Upload Resumes</p>
+        <form onSubmit={createCandidate} className="space-y-3 rounded-xl border border-muted/20 p-4">
+          <p className="font-semibold">2. Add Candidate</p>
           <select className="w-full rounded bg-panel p-2" value={selectedJobId} onChange={(e) => setSelectedJobId(e.target.value)} required>
             {jobs.map((j) => (
               <option key={j.id} value={j.id}>{j.title}</option>
             ))}
           </select>
-          <input
-            className="w-full rounded bg-panel p-2"
-            type="file"
-            accept=".pdf,.docx"
-            multiple
-            onChange={(e) => setFiles(Array.from(e.target.files || []))}
-            required
-          />
-          <p className="text-xs text-muted">Auto extracts name, email, phone, and skills from each resume.</p>
-          <button disabled={!canUpload} className="rounded bg-accent px-3 py-2 text-black disabled:cursor-not-allowed disabled:opacity-50">
-            Upload & Register Candidates
+          <input className="w-full rounded bg-panel p-2" placeholder="Candidate name" value={candidateName} onChange={(e) => setCandidateName(e.target.value)} required />
+          <input className="w-full rounded bg-panel p-2" placeholder="Candidate email" value={candidateEmail} onChange={(e) => setCandidateEmail(e.target.value)} required />
+          <input className="w-full rounded bg-panel p-2" placeholder="Phone (optional)" value={candidatePhone} onChange={(e) => setCandidatePhone(e.target.value)} />
+          <input className="w-full rounded bg-panel p-2" placeholder="Skills CSV (optional)" value={candidateSkills} onChange={(e) => setCandidateSkills(e.target.value)} />
+          <textarea className="w-full rounded bg-panel p-2" rows={5} placeholder="Paste parsed resume JSON (optional)" value={parsedResumeJson} onChange={(e) => setParsedResumeJson(e.target.value)} />
+          <button disabled={!canCreateCandidate} className="rounded bg-accent px-3 py-2 text-black disabled:cursor-not-allowed disabled:opacity-50">
+            Add Candidate
           </button>
         </form>
 

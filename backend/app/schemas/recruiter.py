@@ -28,6 +28,7 @@ class CandidateCreate(BaseModel):
     email: str
     phone: str = ""
     skills: str = ""
+    parsed_resume_json: dict = {}
 
 
 class CandidateOut(BaseModel):
@@ -87,20 +88,6 @@ class BulkInviteResponse(BaseModel):
     failures: list[str]
 
 
-class ResumeOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    candidate_id: UUID
-    job_id: UUID
-    file_name: str
-    file_path: str
-    mime_type: str
-    extracted_email: str
-    extracted_phone: str
-    extracted_skills: str
-
-
 class DashboardStats(BaseModel):
     total_jobs: int
     total_candidates: int
@@ -116,6 +103,7 @@ class InterviewTurn(BaseModel):
 
 class InterviewQuestionRequest(BaseModel):
     history: list[InterviewTurn] = []
+    parsed_resume_json: dict = {}
 
 
 class InterviewQuestionResponse(BaseModel):

@@ -17,14 +17,6 @@ type Job = {
   duration_minutes: number;
 };
 
-type Resume = {
-  id: string;
-  file_name: string;
-  extracted_email: string;
-  extracted_phone: string;
-  extracted_skills: string;
-};
-
 async function getStats(): Promise<DashboardStats> {
   const res = await fetch("http://localhost:8000/api/v1/analytics/dashboard", { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load dashboard stats");
@@ -37,14 +29,8 @@ async function getJobs(): Promise<Job[]> {
   return res.json();
 }
 
-async function getResumes(): Promise<Resume[]> {
-  const res = await fetch("http://localhost:8000/api/v1/resumes", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to load resumes");
-  return res.json();
-}
-
 export default async function DashboardPage() {
-  const [stats, jobs, resumes] = await Promise.all([getStats(), getJobs(), getResumes()]);
+  const [stats, jobs] = await Promise.all([getStats(), getJobs()]);
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl p-6">
@@ -62,24 +48,6 @@ export default async function DashboardPage() {
       </section>
 
       <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} />
-
-      <section className="glass mt-6 rounded-2xl p-8">
-        <h2 className="text-2xl font-semibold">Uploaded Shortlisted Resumes</h2>
-        {resumes.length === 0 ? (
-          <p className="mt-4 text-muted">No resumes uploaded yet.</p>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {resumes.map((r) => (
-              <div key={r.id} className="rounded-xl border border-muted/20 p-4">
-                <p className="font-semibold">{r.file_name}</p>
-                <p className="text-sm text-muted">Email: {r.extracted_email || "-"}</p>
-                <p className="text-sm text-muted">Phone: {r.extracted_phone || "-"}</p>
-                <p className="text-sm text-muted">Skills: {r.extracted_skills || "-"}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
     </main>
   );
 }

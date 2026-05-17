@@ -1,16 +1,12 @@
-import shutil
-import uuid
-from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.exc import DataError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, Job, Resume
+from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, Job
 from app.schemas.recruiter import (
     BulkInviteResponse,
     CandidateCreate,
@@ -18,34 +14,21 @@ from app.schemas.recruiter import (
     DashboardStats,
     InterviewCreate,
     InterviewDetail,
+    InterviewOut,
     InterviewQuestionRequest,
     InterviewQuestionResponse,
+    InterviewTurn,
     InterviewTurnCreate,
     InterviewTurnOut,
-    InterviewTurn,
-    InterviewOut,
     JobCreate,
     JobOut,
-    ResumeOut,
     SendInterviewLinkRequest,
     SendInterviewLinkResponse,
 )
 from app.services.email_service import send_interview_email
 from app.services.interview_engine import analyze_candidate_answer, generate_interview_question
-from app.services.resume_parser import (
-    ensure_upload_dir,
-    extract_email,
-    extract_name,
-    extract_phone,
-    extract_skills,
-    extract_text,
-    save_parsed_resume,
-    sanitize_text,
-)
 
 router = APIRouter(tags=["recruiter"])
-UPLOAD_DIR = ensure_upload_dir("/app/uploads")
-PARSED_RESUME_DIR = ensure_upload_dir("/app/resume_parsed")
 
 BLOCKED_EMAIL_DOMAINS = {"example.com", "test.com", "invalid", "localhost"}
 
@@ -66,18 +49,55 @@ def validate_recipient_email(email: str) -> None:
         )
 
 
+def _extract_skills_from_parsed_json(parsed_resume_json: dict) -> str:
+    data = parsed_resume_json.get("data") if isinstance(parsed_resume_json, dict) else {}
+    if not isinstance(data, dict):
+        return ""
+
+    skills_section = data.get("skills_section", {})
+    if isinstance(skills_section, dict):
+        items = skills_section.get("items", [])
+        if isinstance(items, list):
+            cleaned = [str(item).strip() for item in items if str(item).strip()]
+            return ", ".join(cleaned[:25])
+
+    return ""
+
+
+def _build_resume_context(parsed_resume_json: dict) -> tuple[str, str]:
+    if not isinstance(parsed_resume_json, dict) or not parsed_resume_json:
+        return "", ""
+
+    data = parsed_resume_json.get("data") if isinstance(parsed_resume_json.get("data"), dict) else {}
+    skills = _extract_skills_from_parsed_json(parsed_resume_json)
+
+    project_lines: list[str] = []
+    projects_section = data.get("projects_section", {})
+    if isinstance(projects_section, dict):
+        items = projects_section.get("items", [])
+        if isinstance(items, list):
+            for item in items[:3]:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                description = str(item.get("description") or "").strip()
+                highlights = item.get("highlights", [])
+                joined_highlights = "; ".join(
+                    [str(h).strip() for h in highlights[:3] if str(h).strip()]
+                ) if isinstance(highlights, list) else ""
+                line = " | ".join([p for p in [title, description, joined_highlights] if p])
+                if line:
+                    project_lines.append(line)
+
+    raw_text_preview = str(data.get("raw_text_preview") or "").strip()
+    resume_text = "\n".join(project_lines) or raw_text_preview
+    return resume_text[:3000], skills
+
+
 def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple[bool, str]:
     target_email = candidate.email
     if not is_deliverable_email(target_email):
-        latest_resume = db.execute(
-            select(Resume).where(Resume.candidate_id == candidate.id).order_by(Resume.created_at.desc())
-        ).scalars().first()
-        if latest_resume and latest_resume.extracted_email and is_deliverable_email(latest_resume.extracted_email):
-            target_email = latest_resume.extracted_email
-            candidate.email = target_email
-            db.commit()
-        else:
-            return False, f"{candidate.name}: invalid recipient email"
+        return False, f"{candidate.name}: invalid recipient email"
 
     interview = InterviewSession(candidate_id=candidate.id, job_id=job.id, status="scheduled")
     db.add(interview)
@@ -124,7 +144,18 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
 
     validate_recipient_email(payload.email)
 
-    candidate = Candidate(**payload.model_dump())
+    merged_skills = payload.skills.strip()
+    parsed_skills = _extract_skills_from_parsed_json(payload.parsed_resume_json)
+    if parsed_skills:
+        merged_skills = parsed_skills
+
+    candidate = Candidate(
+        job_id=payload.job_id,
+        name=payload.name,
+        email=payload.email,
+        phone=payload.phone,
+        skills=merged_skills,
+    )
     db.add(candidate)
     db.commit()
     db.refresh(candidate)
@@ -227,10 +258,6 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         interview.status = "in_progress"
         db.commit()
 
-    latest_resume = db.execute(
-        select(Resume).where(Resume.candidate_id == candidate.id).order_by(Resume.created_at.desc())
-    ).scalars().first()
-
     stored_turns = db.execute(
         select(InterviewTurnLog)
         .where(InterviewTurnLog.interview_id == interview_id)
@@ -240,12 +267,16 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
     payload_history = [InterviewTurn(role=t.role, content=t.content).model_dump() for t in payload.history]
     merged_history = stored_history if stored_history else payload_history
 
+    resume_text, parsed_skills = _build_resume_context(payload.parsed_resume_json)
+    resume_skills = parsed_skills or candidate.skills
+
     question, rationale = generate_interview_question(
         role_title=job.title,
-        resume_text=latest_resume.extracted_text if latest_resume else "",
-        resume_skills=latest_resume.extracted_skills if latest_resume else candidate.skills,
+        resume_text=resume_text,
+        resume_skills=resume_skills,
         history=merged_history,
     )
+    rationale = f"{rationale} Job Context: {job.title}. JD: {job.description[:220]}"
 
     db.add(
         InterviewTurnLog(
@@ -358,172 +389,6 @@ def send_links_for_job(job_id: UUID, db: Session = Depends(get_db)):
         failed=attempted - sent,
         failures=failures,
     )
-
-
-@router.post("/resumes/upload-and-register", response_model=ResumeOut)
-def upload_resume_and_register(
-    job_id: UUID = Form(...),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Missing file name")
-
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in {".pdf", ".docx"}:
-        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
-
-    job = db.execute(select(Job).where(Job.id == job_id)).scalars().first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    saved_name = f"{uuid.uuid4()}{suffix}"
-    saved_path = UPLOAD_DIR / saved_name
-
-    with saved_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    text = sanitize_text(extract_text(saved_path))
-    extracted_email = extract_email(text)
-    extracted_phone = extract_phone(text)
-    extracted_skills = extract_skills(text)
-    extracted_name = extract_name(text) or Path(file.filename).stem.replace("_", " ").replace("-", " ").title()
-
-    if not extracted_email:
-        raise HTTPException(status_code=400, detail="Could not extract candidate email from resume")
-
-    existing_candidate = db.execute(
-        select(Candidate).where(Candidate.job_id == job_id).where(Candidate.email == extracted_email)
-    ).scalars().first()
-
-    if existing_candidate:
-        candidate = existing_candidate
-        if extracted_name:
-            candidate.name = extracted_name
-        if extracted_phone:
-            candidate.phone = extracted_phone
-        if extracted_skills:
-            candidate.skills = extracted_skills
-    else:
-        candidate = Candidate(
-            job_id=job_id,
-            name=extracted_name,
-            email=extracted_email,
-            phone=extracted_phone,
-            skills=extracted_skills,
-        )
-        db.add(candidate)
-        db.flush()
-
-    resume = Resume(
-        candidate_id=candidate.id,
-        job_id=job_id,
-        file_name=file.filename,
-        file_path=str(saved_path),
-        mime_type=file.content_type or "",
-        extracted_text=text,
-        extracted_email=extracted_email,
-        extracted_phone=extracted_phone,
-        extracted_skills=extracted_skills,
-    )
-    db.add(resume)
-    save_parsed_resume(
-        parsed_dir=PARSED_RESUME_DIR,
-        source_file_name=file.filename,
-        source_file_path=str(saved_path),
-        candidate_name=extracted_name,
-        extracted_email=extracted_email,
-        extracted_phone=extracted_phone,
-        extracted_skills=extracted_skills,
-        extracted_text=text,
-    )
-
-    try:
-        db.commit()
-    except DataError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Resume contains unsupported binary text. Please upload a text-based PDF/DOCX.")
-
-    db.refresh(resume)
-    return resume
-
-
-@router.post("/resumes/upload", response_model=ResumeOut)
-def upload_resume(
-    candidate_id: UUID = Form(...),
-    job_id: UUID = Form(...),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Missing file name")
-
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in {".pdf", ".docx"}:
-        raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
-
-    cand = db.execute(select(Candidate).where(Candidate.id == candidate_id)).scalars().first()
-    if not cand:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-
-    job = db.execute(select(Job).where(Job.id == job_id)).scalars().first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    saved_name = f"{uuid.uuid4()}{suffix}"
-    saved_path = UPLOAD_DIR / saved_name
-
-    with saved_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    text = sanitize_text(extract_text(saved_path))
-    extracted_email = extract_email(text)
-    extracted_phone = extract_phone(text)
-    extracted_skills = extract_skills(text)
-
-    if extracted_email and (not is_deliverable_email(cand.email)) and is_deliverable_email(extracted_email):
-        cand.email = extracted_email
-
-    if extracted_phone:
-        cand.phone = extracted_phone
-    if extracted_skills:
-        cand.skills = extracted_skills
-
-    resume = Resume(
-        candidate_id=candidate_id,
-        job_id=job_id,
-        file_name=file.filename,
-        file_path=str(saved_path),
-        mime_type=file.content_type or "",
-        extracted_text=text,
-        extracted_email=extracted_email,
-        extracted_phone=extracted_phone,
-        extracted_skills=extracted_skills,
-    )
-    db.add(resume)
-    save_parsed_resume(
-        parsed_dir=PARSED_RESUME_DIR,
-        source_file_name=file.filename,
-        source_file_path=str(saved_path),
-        candidate_name=cand.name,
-        extracted_email=extracted_email,
-        extracted_phone=extracted_phone,
-        extracted_skills=extracted_skills,
-        extracted_text=text,
-    )
-    try:
-        db.commit()
-    except DataError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Resume contains unsupported binary text. Please upload a text-based PDF/DOCX.")
-    db.refresh(resume)
-    return resume
-
-
-@router.get("/resumes", response_model=list[ResumeOut])
-def list_resumes(db: Session = Depends(get_db)):
-    resumes = db.execute(select(Resume).order_by(Resume.created_at.desc())).scalars().all()
-    return list(resumes)
 
 
 @router.get("/analytics/dashboard", response_model=DashboardStats)

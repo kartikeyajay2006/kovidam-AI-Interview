@@ -16,7 +16,7 @@ cp backend/.env.example backend/.env && cp frontend/.env.local frontend/.env.loc
 
 This command does:
 1. Prepares backend env file from template.
-2. Installs frontend dependencies.
+2. Installs frontend cdependencies.
 3. Starts Postgres + Redis + Backend in Docker.
 4. Waits for backend health to become ready.
 5. Starts frontend dev server.
@@ -39,3 +39,4 @@ curl -s http://localhost:8000/api/v1/health/live && echo && curl -s http://local
 ## Notes
 - Set real SMTP + GROQ keys in `backend/.env` for mail + AI interview generation.
 - Use real candidate emails (fake domains like `example.com` are blocked).
+- Resume upload APIs were removed. Add candidates directly and optionally paste parsed resume JSON in the dashboard/API.
