@@ -78,8 +78,13 @@ class InterviewDetail(BaseModel):
     candidate_email: str
     job_id: UUID
     job_title: str
+    job_description: str
+    job_difficulty: str
+    job_interview_type: str
     status: str
     integrity_score: float
+    candidate_skills: str
+    parsed_resume_json: dict
 
 
 class SendInterviewLinkRequest(BaseModel):
@@ -139,3 +144,7 @@ class InterviewTurnOut(BaseModel):
     content: str
     analysis: str
     score: float
+    confidence_score: float = 0.0
+    communication_score: float = 0.0
+    technical_depth_score: float = 0.0
+    authenticity_score: float = 0.0

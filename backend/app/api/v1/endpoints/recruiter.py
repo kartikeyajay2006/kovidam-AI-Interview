@@ -193,6 +193,7 @@ def list_jobs(db: Session = Depends(get_db)):
 
 @router.post("/candidates", response_model=CandidateOut)
 def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
+    import json as _json
     job_exists = db.execute(select(Job.id).where(Job.id == payload.job_id)).first()
     if not job_exists:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -219,6 +220,7 @@ def create_candidate(payload: CandidateCreate, db: Session = Depends(get_db)):
         email=candidate_email,
         phone=candidate_phone,
         skills=merged_skills,
+        parsed_resume_json=_json.dumps(payload.parsed_resume_json) if payload.parsed_resume_json else "{}",
     )
     db.add(candidate)
     db.commit()
@@ -315,6 +317,7 @@ def list_interviews(db: Session = Depends(get_db)):
 
 @router.get("/interviews/{interview_id}", response_model=InterviewDetail)
 def get_interview(interview_id: UUID, db: Session = Depends(get_db)):
+    import json as _json
     row = db.execute(
         select(InterviewSession, Candidate, Job)
         .join(Candidate, Candidate.id == InterviewSession.candidate_id)
@@ -325,6 +328,10 @@ def get_interview(interview_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Interview session not found")
 
     interview, candidate, job = row
+    try:
+        resume_json = _json.loads(candidate.parsed_resume_json or "{}")
+    except Exception:
+        resume_json = {}
     return InterviewDetail(
         id=interview.id,
         candidate_id=candidate.id,
@@ -332,8 +339,13 @@ def get_interview(interview_id: UUID, db: Session = Depends(get_db)):
         candidate_email=candidate.email,
         job_id=job.id,
         job_title=job.title,
+        job_description=job.description,
+        job_difficulty=job.difficulty,
+        job_interview_type=job.interview_type,
         status=interview.status,
         integrity_score=interview.integrity_score,
+        candidate_skills=candidate.skills,
+        parsed_resume_json=resume_json,
     )
 
 
@@ -366,6 +378,7 @@ def end_interview(interview_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/interviews/{interview_id}/next-question", response_model=InterviewQuestionResponse)
 def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db: Session = Depends(get_db)):
+    import json as _json
     row = db.execute(
         select(InterviewSession, Candidate, Job)
         .join(Candidate, Candidate.id == InterviewSession.candidate_id)
@@ -389,7 +402,14 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
     payload_history = [InterviewTurn(role=t.role, content=t.content).model_dump() for t in payload.history]
     merged_history = stored_history if stored_history else payload_history
 
-    resume_text, parsed_skills = _build_resume_context(payload.parsed_resume_json)
+    # Load resume from DB first; fall back to payload
+    try:
+        db_resume_json = _json.loads(candidate.parsed_resume_json or "{}")
+    except Exception:
+        db_resume_json = {}
+    effective_resume_json = db_resume_json if db_resume_json else (payload.parsed_resume_json or {})
+
+    resume_text, parsed_skills = _build_resume_context(effective_resume_json)
     resume_skills = parsed_skills or candidate.skills
 
     question, rationale = generate_interview_question(
@@ -399,7 +419,7 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         difficulty=job.difficulty,
         resume_text=resume_text,
         resume_skills=resume_skills,
-        parsed_resume_json=payload.parsed_resume_json,
+        parsed_resume_json=effective_resume_json,
         human_question_bank=payload.human_question_bank or _default_human_question_bank(),
         history=merged_history,
     )
@@ -439,6 +459,7 @@ def list_interview_turns(interview_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/interviews/{interview_id}/turns", response_model=InterviewTurnOut)
 def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Session = Depends(get_db)):
+    import json as _json
     interview_row = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
     if not interview_row:
         raise HTTPException(status_code=404, detail="Interview session not found")
@@ -449,6 +470,8 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
 
     analysis = ""
     score = 0.0
+    confidence_score = communication_score = technical_depth_score = authenticity_score = 0.0
+
     if role == "candidate":
         job = db.execute(select(Job).where(Job.id == interview_row.job_id)).scalars().first()
         candidate = db.execute(select(Candidate).where(Candidate.id == interview_row.candidate_id)).scalars().first()
@@ -459,18 +482,34 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
         ).scalars().all()
         history = [{"role": t.role, "content": t.content} for t in turns]
         history.append({"role": "candidate", "content": payload.content})
+        try:
+            resume_json = _json.loads(candidate.parsed_resume_json or "{}")
+        except Exception:
+            resume_json = {}
         candidate_info = {
             "name": candidate.name if candidate else "",
-            "email": candidate.email if candidate else "",
-            "phone": candidate.phone if candidate else "",
             "skills": candidate.skills if candidate else "",
+            "resume_context": resume_json.get("data", {}).get("raw_text_preview", "")[:500] if resume_json else "",
         }
-        analysis, score = analyze_candidate_answer(
+        raw_analysis, score = analyze_candidate_answer(
             payload.content,
             job.title if job else "Software Engineer",
             candidate_info=candidate_info,
             full_history=history,
         )
+        # Parse per-category scores if the analysis string is JSON
+        try:
+            if raw_analysis.strip().startswith("{"):
+                parsed_eval = _json.loads(raw_analysis)
+                confidence_score = float(parsed_eval.get("confidence_score", 0.0))
+                communication_score = float(parsed_eval.get("communication_score", 0.0))
+                technical_depth_score = float(parsed_eval.get("technical_depth_score", 0.0))
+                authenticity_score = float(parsed_eval.get("authenticity_score", 0.0))
+                analysis = str(parsed_eval.get("analysis", "")).strip() or raw_analysis
+            else:
+                analysis = raw_analysis
+        except Exception:
+            analysis = raw_analysis
 
     turn = InterviewTurnLog(
         interview_id=interview_id,
@@ -478,6 +517,10 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
         content=payload.content,
         analysis=analysis,
         score=score,
+        confidence_score=confidence_score,
+        communication_score=communication_score,
+        technical_depth_score=technical_depth_score,
+        authenticity_score=authenticity_score,
     )
     db.add(turn)
     db.commit()

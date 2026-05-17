@@ -29,6 +29,7 @@ class Candidate(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str] = mapped_column(String(32), default="")
     skills: Mapped[str] = mapped_column(Text, default="")
+    parsed_resume_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -70,4 +71,9 @@ class InterviewTurnLog(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     analysis: Mapped[str] = mapped_column(Text, default="")
     score: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    communication_score: Mapped[float] = mapped_column(Float, default=0.0)
+    technical_depth_score: Mapped[float] = mapped_column(Float, default=0.0)
+    authenticity_score: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+

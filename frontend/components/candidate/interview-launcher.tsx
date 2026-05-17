@@ -12,7 +12,7 @@ type Props = {
 };
 
 type CheckState = "idle" | "checking" | "passed" | "failed";
-type Turn = { role: "assistant" | "candidate"; content: string; analysis?: string; score?: number };
+type Turn = { role: "assistant" | "candidate"; content: string; analysis?: string; score?: number; confidence_score?: number; communication_score?: number; technical_depth_score?: number; authenticity_score?: number };
 type SetupStep = "camera" | "microphone" | "screen" | "ready";
 
 type SpeechRecognitionLike = {
@@ -68,6 +68,7 @@ export default function InterviewLauncher({
   const [autoListen, setAutoListen] = useState(true);
   const [lastScore, setLastScore] = useState<number | null>(null);
   const [lastAnalysis, setLastAnalysis] = useState("");
+  const [liveScores, setLiveScores] = useState({ confidence: 0, communication: 0, technical: 0, authenticity: 0 });
   const [elapsedSec, setElapsedSec] = useState(0);
   const [navActive, setNavActive] = useState("Interviews");
   const [internetOnline, setInternetOnline] = useState(true);
@@ -294,66 +295,83 @@ export default function InterviewLauncher({
     const video = userVideoRef.current;
     if (!canvas || !video) return;
 
+    let noFaceFrameCount = 0;       // consecutive frames with no face detected
+    let frameCounter = 0;           // throttle: only analyse every 6th frame
+    const NO_FACE_TRIGGER_FRAMES = 45; // ~1.5s at 30fps before declaring "no face"
+    let lastLoggedNoFace = false;
+
     function addSecurityEvent(evt: string) {
       const now = new Date().toLocaleTimeString();
       setSecurityEvents(prev => [{time: now, event: evt}, ...prev].slice(0, 20));
     }
 
     function checkFrame() {
-      if (!canvas || !video || video.readyState < 2) {
-        faceCheckRef.current = requestAnimationFrame(checkFrame);
-        return;
-      }
+      faceCheckRef.current = requestAnimationFrame(checkFrame);
+
+      // Only run analysis every 6th frame (≈5fps analysis, smooth UI)
+      frameCounter++;
+      if (frameCounter % 6 !== 0) return;
+
+      if (!canvas || !video || video.readyState < 2 || video.videoWidth === 0) return;
+
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      canvas.width = 160; canvas.height = 120;
-      ctx.drawImage(video, 0, 0, 160, 120);
-      const data = ctx.getImageData(0, 0, 160, 120).data;
+      canvas.width = 80; canvas.height = 60;  // smaller = faster
+      ctx.drawImage(video, 0, 0, 80, 60);
+      const data = ctx.getImageData(0, 0, 80, 60).data;
 
-      // Compute brightness variance across blocks to detect face presence
+      // Compute brightness for each of 16 blocks (4x4 grid)
       const blockBrightness: number[] = [];
       for (let by = 0; by < 4; by++) {
         for (let bx = 0; bx < 4; bx++) {
           let sum = 0, count = 0;
-          for (let y = by * 30; y < (by + 1) * 30; y++) {
-            for (let x = bx * 40; x < (bx + 1) * 40; x++) {
-              const i = (y * 160 + x) * 4;
-              sum += (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+          for (let y = by * 15; y < (by + 1) * 15; y++) {
+            for (let x = bx * 20; x < (bx + 1) * 20; x++) {
+              const i = (y * 80 + x) * 4;
+              sum += data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
               count++;
             }
           }
           blockBrightness.push(sum / count);
         }
       }
+
       const mean = blockBrightness.reduce((a, b) => a + b, 0) / blockBrightness.length;
-      const variance = blockBrightness.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / blockBrightness.length;
+      const variance = blockBrightness.reduce((a, b) => a + (b - mean) ** 2, 0) / blockBrightness.length;
 
-      // Low variance = blank/dark/uniform = no face detected
-      const hasFace = variance > 120;
+      // A face requires:
+      //  1. Sufficient scene brightness (mean > 20) — catches covered/dark camera
+      //  2. Brightness variation (variance > 150) — catches blank walls / solid backgrounds
+      //  3. Some pixels brighter than 60 (catches pure black frames)
+      const brightPixels = blockBrightness.filter(b => b > 60).length;
+      const hasFace = mean > 20 && variance > 150 && brightPixels >= 4;
 
-      // Skin tone detection for multiple faces (crude: count skin-like pixels in top half vs bottom half)
-      let topSkin = 0, bottomSkin = 0;
-      for (let y = 0; y < 120; y++) {
-        for (let x = 0; x < 160; x++) {
-          const i = (y * 160 + x) * 4;
-          const r = data[i], g = data[i+1], b = data[i+2];
-          const isSkin = r > 95 && g > 40 && b > 20 && r > g && r > b && (r - g) > 15 && Math.abs(r - g) > 15;
-          if (isSkin) { if (y < 60) topSkin++; else bottomSkin++; }
+      if (!hasFace) {
+        noFaceFrameCount++;
+      } else {
+        noFaceFrameCount = 0;
+        if (lastLoggedNoFace) {
+          lastLoggedNoFace = false;
+          setFaceVisible(true);
+        } else {
+          setFaceVisible(true);
         }
       }
-      const hasMultiple = topSkin > 400 && bottomSkin > 400;
 
-      setFaceVisible(hasFace);
-      setMultipleFaces(hasMultiple);
-      if (!hasFace) addSecurityEvent("Face not visible");
-      if (hasMultiple) addSecurityEvent("Multiple faces detected");
-
-      faceCheckRef.current = requestAnimationFrame(checkFrame);
+      // Only declare "no face" after sustained absence (avoids flicker on blink/look-away)
+      if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES) {
+        setFaceVisible(false);
+        if (!lastLoggedNoFace) {
+          addSecurityEvent("Face not visible in camera");
+          lastLoggedNoFace = true;
+        }
+      }
     }
 
     faceCheckRef.current = requestAnimationFrame(checkFrame);
     return () => { if (faceCheckRef.current) cancelAnimationFrame(faceCheckRef.current); };
   }, [status, cheatingTagged, cameraOn]);
+
 
   // Face violation 10-second countdown
   useEffect(() => {
@@ -433,17 +451,33 @@ export default function InterviewLauncher({
       const parsed = await readJsonSafe(res);
       if (!parsed.ok) return [];
       const payload = parsed.data;
-      const turns: Turn[] = (payload || []).map((t: { role: "assistant" | "candidate"; content: string; analysis: string; score: number }) => ({
+      const turns: Turn[] = (payload || []).map((t: { role: "assistant" | "candidate"; content: string; analysis: string; score: number; confidence_score?: number; communication_score?: number; technical_depth_score?: number; authenticity_score?: number }) => ({
         role: t.role,
         content: t.content,
         analysis: t.analysis,
         score: t.score,
+        confidence_score: t.confidence_score ?? 0,
+        communication_score: t.communication_score ?? 0,
+        technical_depth_score: t.technical_depth_score ?? 0,
+        authenticity_score: t.authenticity_score ?? 0,
       }));
       setHistory(turns);
-      const latestCandidate = [...turns].reverse().find((t) => t.role === "candidate" && (t.analysis || t.score));
-      if (latestCandidate) {
+      // Accumulate scores across all candidate turns for running averages
+      const candidateTurns = turns.filter((t) => t.role === "candidate" && (t.score ?? 0) > 0);
+      if (candidateTurns.length > 0) {
+        const avg = (key: keyof Turn) => {
+          const vals = candidateTurns.map((t) => (t[key] as number) ?? 0).filter((v) => v > 0);
+          return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        };
+        setLiveScores({
+          confidence: avg("confidence_score"),
+          communication: avg("communication_score"),
+          technical: avg("technical_depth_score"),
+          authenticity: avg("authenticity_score"),
+        });
+        const latestCandidate = [...candidateTurns].reverse()[0];
         setLastAnalysis(latestCandidate.analysis || "");
-        setLastScore(typeof latestCandidate.score === "number" ? latestCandidate.score : null);
+        setLastScore(latestCandidate.score ?? null);
       }
       return turns;
     } catch {
@@ -1072,8 +1106,8 @@ export default function InterviewLauncher({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${faceVisible && !multipleFaces ? "bg-emerald-500/20 text-emerald-300 ring-emerald-500/30" : "bg-rose-500/30 text-rose-300 ring-rose-500/30 animate-pulse"}`}>
-                      {!faceVisible ? "⚠ No Face" : multipleFaces ? "⚠ Multiple Faces" : "✓ Face OK"}
+                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${faceVisible ? "bg-emerald-500/20 text-emerald-300 ring-emerald-500/30" : "bg-rose-500/30 text-rose-300 ring-rose-500/30 animate-pulse"}`}>
+                      {faceVisible ? "✓ Face OK" : "⚠ No Face"}
                     </div>
                     <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${sharingScreen ? "bg-teal-500/20 text-teal-300 ring-teal-500/30" : "bg-rose-500/30 text-rose-300 ring-rose-500/30"}`}>
                       {sharingScreen ? "✓ Screen" : "⚠ No Screen"}
@@ -1091,7 +1125,7 @@ export default function InterviewLauncher({
                     <div className="absolute inset-0 flex items-center justify-center bg-slate-900/95 text-xs text-white/50">Camera off</div>
                   )}
                   {/* Face detection indicator on PiP */}
-                  <div className={`absolute inset-0 rounded-2xl ring-2 transition-all ${!faceVisible ? "ring-rose-500 animate-pulse" : multipleFaces ? "ring-orange-400 animate-pulse" : "ring-transparent"}`} />
+                  <div className={`absolute inset-0 rounded-2xl ring-2 transition-all ${!faceVisible ? "ring-rose-500 animate-pulse" : "ring-transparent"}`} />
                   <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent p-2">
                     <p className="text-xs font-medium text-white">{candidateName}</p>
                   </div>
@@ -1126,7 +1160,7 @@ export default function InterviewLauncher({
                     {faceViolationCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-orange-600/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">⚠️</span>
-                        <span>{!faceVisible ? "FACE NOT VISIBLE" : "MULTIPLE FACES DETECTED"} — Restore compliance in {faceViolationCountdown}s or interview terminates</span>
+                        <span>FACE NOT VISIBLE — Look directly at the camera. Interview terminates in {faceViolationCountdown}s</span>
                       </div>
                     )}
                     {securityCountdown !== null && (
@@ -1172,7 +1206,8 @@ export default function InterviewLauncher({
                 <div className="space-y-2">
                   {[
                     { label: "Face Visible", ok: faceVisible, icon: "👤" },
-                    { label: "Single Person", ok: !multipleFaces, icon: "🧍" },
+
+
                     { label: "Camera Active", ok: cameraOn, icon: "📷" },
                     { label: "Microphone Active", ok: micOn, icon: "🎤" },
                     { label: "Screen Sharing", ok: sharingScreen, icon: "🖥" },
@@ -1215,23 +1250,26 @@ export default function InterviewLauncher({
                 <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-4">Live Scoring</h3>
                 <div className="space-y-3">
                   {[
-                    { label: "Communication", score: lastScore && lastScore > 7 ? lastScore : 5 },
-                    { label: "Confidence", score: history.length > 2 ? 7 : 4 },
-                    { label: "Technical Depth", score: lastScore && lastScore > 6 ? lastScore : 4 },
-                    { label: "Examples", score: history.filter(t => t.role === "candidate").length > 1 ? 7 : 2 },
-                  ].map(({ label, score }) => (
+                    { label: "Communication", score: liveScores.communication, color: "from-blue-400 to-cyan-500" },
+                    { label: "Confidence", score: liveScores.confidence, color: "from-violet-400 to-purple-500" },
+                    { label: "Technical Depth", score: liveScores.technical, color: "from-teal-400 to-emerald-500" },
+                    { label: "Authenticity", score: liveScores.authenticity, color: "from-amber-400 to-orange-500" },
+                  ].map(({ label, score, color }) => (
                     <div key={label}>
                       <div className="flex justify-between text-xs mb-1">
                         <span className="text-slate-500">{label}</span>
-                        <span className="font-medium text-slate-700">{score}/10</span>
+                        <span className={`font-semibold ${score >= 7 ? "text-emerald-600" : score >= 5 ? "text-amber-600" : score > 0 ? "text-rose-500" : "text-slate-300"}`}>
+                          {score > 0 ? `${score.toFixed(1)}/10` : "–"}
+                        </span>
                       </div>
-                      <div className="h-1.5 rounded-full bg-slate-100">
-                        <div className="h-1.5 rounded-full bg-gradient-to-r from-teal-400 to-emerald-500 transition-all duration-700" style={{ width: `${score * 10}%` }} />
+                      <div className="h-2 rounded-full bg-slate-100">
+                        <div className={`h-2 rounded-full bg-gradient-to-r ${color} transition-all duration-700`} style={{ width: score > 0 ? `${score * 10}%` : "0%" }} />
                       </div>
                     </div>
                   ))}
                 </div>
-                {lastAnalysis && <p className="mt-3 text-xs text-emerald-700 bg-emerald-50 rounded-lg p-3 border border-emerald-100">{lastAnalysis}</p>}
+                {lastAnalysis && <p className="mt-3 text-xs text-emerald-700 bg-emerald-50 rounded-lg p-3 border border-emerald-100 leading-relaxed">{lastAnalysis}</p>}
+                {liveScores.communication === 0 && <p className="mt-2 text-xs text-slate-400 text-center">Scores update after each answer</p>}
               </div>
 
               {/* Voice Control */}
