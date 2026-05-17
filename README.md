@@ -11,14 +11,15 @@ Production-grade AI Interview & Candidate Evaluation Platform for recruiters and
 Run this from the project root (works on any laptop path, no hardcoded directory):
 
 ```bash
-[ -f backend/.env ] || cp backend/.env.example backend/.env; cd frontend && npm install && cd .. && docker compose up -d --build --force-recreate postgres redis backend && until curl -sf http://localhost:8000/api/v1/health/live; do sleep 1; done && echo "Backend is live" && cd frontend && npm run dev:stable
+cd /home/kartikeyayadav/Desktop/kovidam-AI-Interview && [ -f backend/.env ] || cp backend/.env.example backend/.env; cd frontend && npm install && cd .. && docker compose up -d --build --force-recreate postgres redis backend && until curl -sf http://localhost:8000/api/v1/health/live; do sleep 1; done && echo "Backend is live" && cd frontend && pkill -f "next dev" || true; rm -rf .next node_modules/.cache; npm run dev
 ```
 This command does:
-1. Creates `backend/.env` from template only if it does not exist (does not overwrite your SMTP keys).
-2. Installs frontend cdependencies.
-3. Rebuilds/recreates Postgres + Redis + Backend in Docker so latest env values are loaded.
-4. Waits for backend health to become ready.
-5. Starts frontend dev server in stable mode.
+1. Moves to project root.
+2. Creates `backend/.env` from template only if it does not exist (does not overwrite your SMTP keys).
+3. Installs frontend dependencies.
+4. Rebuilds/recreates Postgres + Redis + Backend in Docker so latest env values are loaded.
+5. Waits for backend health to become ready.
+6. Stops old Next dev processes, clears frontend cache, and starts frontend dev server cleanly.
 
 ## URLs
 - Frontend: `http://localhost:3000`
