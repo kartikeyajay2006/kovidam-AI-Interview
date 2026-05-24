@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
@@ -13,6 +14,11 @@ from app.db.session import Base, engine
 async def lifespan(app: FastAPI):
     setup_logging()
     Base.metadata.create_all(bind=engine)
+    # Keep older local DBs compatible with current model fields.
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS question_bank TEXT NOT NULL DEFAULT ''")
+        )
     yield
 
 
