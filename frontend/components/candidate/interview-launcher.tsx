@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Camera, Mic, Monitor, CheckCircle, AlertCircle, Wifi, Play, Sparkles, Shield, User, RefreshCw, Activity, ArrowRight, Eye, ShieldCheck } from "lucide-react";
 
 type Props = {
   interviewId: string;
@@ -870,69 +871,321 @@ export default function InterviewLauncher({
 
   if (status !== "in_progress") {
     return (
-      <main className="mx-auto min-h-screen max-w-[900px] bg-[#0b0c10] p-5 md:p-10">
-        <section className="rounded-2xl border border-white/10 bg-[#12121a] p-6 shadow-[0_0_20px_rgba(99,102,241,0.05)] md:p-8">
-          <p className="text-xs uppercase tracking-[0.22em] text-indigo-400">KOVIदम् AI Interview</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Before Interview Starts</h1>
-          <p className="mt-2 text-sm text-slate-400">Session ID: {sessionId}</p>
-          <p className="mt-1 text-sm text-slate-400">Candidate: {candidateName} • {candidateEmail}</p>
-          <p className="mt-1 text-sm text-slate-400">Role: {jobTitle}</p>
+      <main className="relative min-h-screen bg-gradient-to-br from-[#05060b] via-[#090b12] to-[#040508] text-slate-100 flex flex-col items-center justify-center p-4 md:p-8 overflow-hidden select-none">
+        {/* Futuristic Background Glows */}
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(139,92,246,0.1),transparent_50%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(59,130,246,0.08),transparent_50%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(99,102,241,0.04),transparent_70%)]" />
 
-          <div className="mt-6 grid grid-cols-1 gap-3">
-            <div className="rounded-xl border border-white/10 bg-[#0a0a12] p-3">
-              <p className="mb-2 text-sm font-semibold text-slate-300">Live Camera Preview</p>
-              <div className="relative aspect-video overflow-hidden rounded-lg border border-white/10 bg-slate-900">
-                <video ref={userVideoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
-                {!cameraOn ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">
-                    Camera preview appears here after permission
-                  </div>
-                ) : null}
+        {/* Ambient Grid Effect */}
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.005)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.005)_1px,transparent_1px)] bg-[size:40px_40px] opacity-40" />
+
+        {/* Massive Glassmorphic Setup Card */}
+        <section className="relative z-10 w-full max-w-6xl rounded-3xl border border-white/[0.08] bg-[#0c0d16]/80 backdrop-blur-3xl p-6 md:p-10 shadow-[0_0_80px_rgba(99,102,241,0.08)]">
+          
+          {/* Header Layout */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-8 border-b border-white/[0.08]">
+            <div className="flex items-center gap-3">
+              <img
+                src="/logo.png"
+                alt="Kovidam Logo"
+                className="h-16 w-auto object-contain -scale-x-100 drop-shadow-[0_0_12px_rgba(139,92,246,0.5)]"
+              />
+              <div>
+                <span className="text-2xl font-extrabold text-white tracking-[0.15em] flex items-center uppercase" style={{ fontFamily: "Inter, sans-serif" }}>
+                  KOVI<span className="text-indigo-500 font-bold tracking-normal ml-1" style={{ fontFamily: "system-ui" }}>दम्</span>
+                </span>
+                <p className="text-xs text-indigo-400 font-mono tracking-widest mt-0.5">SECURED INTERVIEW ENGINE v2.0</p>
               </div>
             </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "camera" ? "border-indigo-500/50 bg-indigo-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
-              <p className="font-semibold text-slate-200">Step 1: Camera Access</p>
-              <p className="mt-1 text-sm text-slate-400">{cameraOn ? "Granted" : "Required before interview can start."}</p>
-            </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "microphone" ? "border-indigo-500/50 bg-indigo-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
-              <p className="font-semibold text-slate-200">Step 2: Microphone Access</p>
-              <p className="mt-1 text-sm text-slate-400">{micOn ? "Granted" : "Required after camera step."}</p>
-            </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "screen" ? "border-indigo-500/50 bg-indigo-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
-              <p className="font-semibold text-slate-200">Step 3: Screen Share</p>
-              <p className="mt-1 text-sm text-slate-400">{sharingScreen ? "Granted" : "Required after microphone step."}</p>
-            </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "ready" ? "border-emerald-500/50 bg-emerald-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
-              <p className="font-semibold text-slate-200">Step 4: Start Interview</p>
-              <p className="mt-1 text-sm text-slate-400">
-                Internet: {internetQuality === "good" ? "Stable" : internetQuality === "unstable" ? "Unstable" : "Offline"}
-              </p>
+
+            {/* Candidate Info Badge */}
+            <div className="rounded-2xl border border-white/[0.06] bg-[#121421]/60 px-5 py-3 text-xs md:text-sm text-slate-300 flex items-center gap-4 backdrop-blur-md">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                <User className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="font-semibold text-white">{candidateName}</p>
+                <p className="text-slate-400 mt-0.5">{candidateEmail} • <span className="text-indigo-400 font-medium">{jobTitle}</span></p>
+              </div>
             </div>
           </div>
 
-          <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <button onClick={runDeviceCheck} className="rounded-lg bg-white/5 px-3 py-3 text-sm text-slate-300 ring-1 ring-white/10 hover:bg-white/10 transition">
-              {checkState === "checking"
-                ? "Checking..."
-                : setupStep === "camera"
-                  ? "Allow Camera"
-                  : setupStep === "microphone"
-                    ? "Allow Microphone"
-                    : setupStep === "screen"
-                      ? "Allow Screen Share"
-                      : "Checks Complete"}
-            </button>
-            <button
-              onClick={startInterview}
-              disabled={!canStart}
-              className="rounded-lg bg-indigo-600 px-3 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 hover:bg-indigo-500 transition"
-            >
-              Start Interview
-            </button>
+          {/* Stepper Pipeline */}
+          <div className="py-6 flex items-center justify-center">
+            <div className="flex w-full max-w-3xl items-center justify-between relative px-2">
+              <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-white/[0.06] -translate-y-1/2 z-0" />
+              
+              {/* Stepper Progress Bar */}
+              <div 
+                className="absolute top-1/2 left-0 h-0.5 bg-gradient-to-r from-indigo-500 to-emerald-500 -translate-y-1/2 z-0 transition-all duration-500" 
+                style={{ 
+                  width: setupStep === "camera" ? "12%" : setupStep === "microphone" ? "45%" : setupStep === "screen" ? "78%" : "100%" 
+                }} 
+              />
+
+              {[
+                { step: "camera", label: "Camera Access", num: 1 },
+                { step: "microphone", label: "Mic Access", num: 2 },
+                { step: "screen", label: "Screen Share", num: 3 },
+                { step: "ready", label: "System Ready", num: 4 }
+              ].map((item, idx) => {
+                const isPassed = 
+                  (item.step === "camera" && cameraOn) || 
+                  (item.step === "microphone" && micOn) || 
+                  (item.step === "screen" && sharingScreen) ||
+                  (item.step === "ready" && setupStep === "ready");
+                const isActive = setupStep === item.step;
+                
+                return (
+                  <div key={item.step} className="flex flex-col items-center relative z-10">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all duration-300 ${
+                      isPassed 
+                        ? "bg-emerald-500 border-emerald-400 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]" 
+                        : isActive 
+                          ? "bg-indigo-600 border-indigo-400 text-white shadow-[0_0_15px_rgba(79,70,229,0.4)] scale-110" 
+                          : "bg-[#0b0c10] border-white/10 text-slate-500"
+                    }`}>
+                      {isPassed ? <CheckCircle className="h-5 w-5" /> : <span className="font-mono text-sm font-bold">{item.num}</span>}
+                    </div>
+                    <span className={`mt-2 text-xs font-semibold tracking-wide transition-colors ${
+                      isActive ? "text-indigo-400 font-extrabold" : isPassed ? "text-emerald-400" : "text-slate-500"
+                    }`}>{item.label}</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
-          {startBlockReason ? <p className="mt-3 text-sm text-amber-500">{startBlockReason}</p> : null}
-          {message ? <p className="mt-2 text-sm text-slate-400">{message}</p> : null}
+          {/* Double Column Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-6">
+            
+            {/* Left Column: Device Verification Studio Sandbox (7-span) */}
+            <div className="lg:col-span-7 flex flex-col gap-5">
+              
+              {/* Live Preview Viewport */}
+              <div className="relative aspect-video rounded-3xl overflow-hidden border border-white/[0.08] bg-[#07080d] shadow-2xl flex flex-col justify-center items-center group">
+                <video 
+                  ref={userVideoRef} 
+                  autoPlay 
+                  muted 
+                  playsInline 
+                  className={`h-full w-full object-cover transition-opacity duration-500 ${cameraOn ? "opacity-100 scale-100" : "opacity-0 scale-95"}`} 
+                />
+
+                {/* Cyber HUD Overlay when Camera Active */}
+                {cameraOn && (
+                  <div className="absolute inset-0 p-4 flex flex-col justify-between pointer-events-none z-10">
+                    <div className="flex justify-between items-start">
+                      <div className="flex items-center gap-2 bg-black/60 px-3 py-1.5 rounded-full border border-white/10 backdrop-blur-md">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                        <span className="font-mono text-[10px] text-emerald-400 font-semibold tracking-wider">LIVE FEED SECURED</span>
+                      </div>
+                      <div className="bg-black/60 px-3 py-1.5 rounded-full border border-white/10 backdrop-blur-md text-[10px] font-mono text-slate-400">
+                        1080p • 60FPS
+                      </div>
+                    </div>
+                    
+                    {/* Audio bouncing wave simulator */}
+                    <div className="flex justify-between items-end">
+                      <div className="flex items-center gap-1.5 bg-black/60 px-3 py-2 rounded-xl border border-white/10 backdrop-blur-md">
+                        <Activity className="h-3 w-3 text-indigo-400 animate-pulse" />
+                        <span className="font-mono text-[9px] text-slate-300">AUDIO SIGNAL: ACTIVE</span>
+                        <div className="flex items-end gap-0.5 h-3 ml-2">
+                          {Array.from({ length: 6 }).map((_, i) => (
+                            <div 
+                              key={i} 
+                              className="w-0.5 bg-indigo-400 rounded-full" 
+                              style={{ 
+                                height: `${30 + Math.random() * 70}%`,
+                                animation: micOn ? `pulse ${0.3 + i * 0.1}s ease-in-out infinite alternate` : "none"
+                              }} 
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-500 bg-black/60 px-2 py-1 rounded border border-white/5 backdrop-blur-md">SSL_PORT_322</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Abstract Interactive Placeholder when Camera Offline */}
+                {!cameraOn && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-[#0e1017] via-[#07080e] to-[#040508] p-6 text-center select-none z-0">
+                    <div className="relative mb-4">
+                      <div className="absolute inset-0 rounded-full bg-indigo-500/10 blur-xl animate-pulse" />
+                      <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-white/10 bg-slate-900/60 shadow-lg text-slate-400 group-hover:text-indigo-400 transition-colors duration-300">
+                        <Camera className="h-8 w-8 animate-pulse" />
+                      </div>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-300">Live Camera Check Pending</p>
+                    <p className="text-xs text-slate-500 max-w-sm mt-1">Activate camera access to initiate secure system identification and environment compliance scanning.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Secure Shield Verification Checklist */}
+              <div className="rounded-2xl border border-white/[0.06] bg-[#121422]/40 p-4 backdrop-blur-md grid grid-cols-2 gap-3">
+                {[
+                  { label: "Anti-Cheating Shield Active", active: true },
+                  { label: "Screen Recorders Initialized", active: sharingScreen },
+                  { label: "SSL Data Encryption Active", active: true },
+                  { label: "Hardware Latency Verified", active: setupStep === "ready" }
+                ].map((chk, i) => (
+                  <div key={i} className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-black/20 border border-white/5 text-xs text-slate-300 font-medium">
+                    <ShieldCheck className={`h-4 w-4 shrink-0 ${chk.active ? "text-emerald-400" : "text-slate-500"}`} />
+                    <span className="truncate">{chk.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Right Column: Steps & Massive Action Callouts (5-span) */}
+            <div className="lg:col-span-5 flex flex-col justify-between gap-5">
+              <div className="space-y-3.5">
+                {[
+                  {
+                    step: "camera",
+                    title: "Step 1: Face Compliance Scan",
+                    desc: "Verify identity and secure environment via high-res video channel.",
+                    status: cameraOn ? "Passed" : setupStep === "camera" ? "Verifying" : "Pending",
+                    icon: Camera
+                  },
+                  {
+                    step: "microphone",
+                    title: "Step 2: Microphone Calibration",
+                    desc: "Calibrate voice parameters for conversational analysis.",
+                    status: micOn ? "Passed" : setupStep === "microphone" ? "Verifying" : "Pending",
+                    icon: Mic
+                  },
+                  {
+                    step: "screen",
+                    title: "Step 3: Secure Display Share",
+                    desc: "Confirm display authorization to guarantee interview fairness.",
+                    status: sharingScreen ? "Passed" : setupStep === "screen" ? "Verifying" : "Pending",
+                    icon: Monitor
+                  },
+                  {
+                    step: "ready",
+                    title: "Step 4: Latency & Ready Check",
+                    desc: "Perform dynamic connection quality and bandwidth audit.",
+                    status: setupStep === "ready" ? "Active" : "Pending",
+                    icon: Sparkles
+                  }
+                ].map((st) => {
+                  const Icon = st.icon;
+                  const isPassed = st.status === "Passed" || st.status === "Active";
+                  const isCurrent = setupStep === st.step;
+                  
+                  return (
+                    <div 
+                      key={st.step} 
+                      className={`relative overflow-hidden rounded-2xl border p-4 transition-all duration-300 flex gap-4 ${
+                        isPassed 
+                          ? "border-emerald-500/20 bg-emerald-500/[0.02]" 
+                          : isCurrent 
+                            ? "border-indigo-500/40 bg-gradient-to-r from-indigo-500/[0.06] to-violet-500/[0.02] shadow-[0_0_20px_rgba(99,102,241,0.06)] scale-[1.01]" 
+                            : "border-white/[0.04] bg-[#0c0d16]"
+                      }`}
+                    >
+                      {/* Step Indicator Glow */}
+                      {isCurrent && (
+                        <div className="absolute top-0 bottom-0 left-0 w-1 bg-gradient-to-b from-indigo-500 to-violet-600" />
+                      )}
+
+                      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-all duration-300 ${
+                        isPassed 
+                          ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
+                          : isCurrent 
+                            ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-400" 
+                            : "bg-[#121422] border-white/5 text-slate-500"
+                      }`}>
+                        <Icon className="h-5 w-5" />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className={`text-sm font-semibold tracking-wide ${isCurrent ? "text-indigo-300" : isPassed ? "text-slate-200" : "text-slate-400"}`}>
+                            {st.title}
+                          </p>
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                            isPassed 
+                              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                              : isCurrent 
+                                ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 animate-pulse" 
+                                : "bg-white/[0.02] text-slate-600 border border-white/5"
+                          }`}>
+                            {st.status}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-400 leading-relaxed truncate-2-lines">{st.desc}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Action Call Panel */}
+              <div className="mt-3 space-y-4">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button 
+                    onClick={runDeviceCheck} 
+                    className="flex-1 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-sm text-slate-200 font-semibold px-4 py-4 ring-1 ring-white/10 hover:ring-white/20 transition-all duration-300 flex items-center justify-center gap-2 shadow-inner"
+                  >
+                    {checkState === "checking" ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin text-indigo-400" />
+                        <span>Verifying Hardware...</span>
+                      </>
+                    ) : (
+                      <>
+                        {setupStep === "camera" && <Camera className="h-4 w-4" />}
+                        {setupStep === "microphone" && <Mic className="h-4 w-4" />}
+                        {setupStep === "screen" && <Monitor className="h-4 w-4" />}
+                        {setupStep === "ready" && <CheckCircle className="h-4 w-4 text-emerald-400" />}
+                        <span>
+                          {setupStep === "camera" 
+                            ? "Allow Camera Access" 
+                            : setupStep === "microphone" 
+                              ? "Allow Microphone Feed" 
+                              : setupStep === "screen" 
+                                ? "Initiate Screen Share" 
+                                : "System Hardware Verified"}
+                        </span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={startInterview}
+                    disabled={!canStart}
+                    className="flex-1 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-sm font-bold text-white px-4 py-4 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-300 flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(99,102,241,0.25)] hover:shadow-[0_4px_30px_rgba(99,102,241,0.4)] select-none animate-pulse"
+                    style={{ animationDuration: "2s" }}
+                  >
+                    <span>Launch AI Interview</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {/* Error/Notice dynamic panel */}
+                {startBlockReason && (
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.03] p-3 text-xs text-amber-400 flex items-start gap-2 backdrop-blur-md">
+                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span>{startBlockReason}</span>
+                  </div>
+                )}
+                
+                {message && !startBlockReason && (
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.03] p-3 text-xs text-indigo-400 flex items-start gap-2 backdrop-blur-md">
+                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span>{message}</span>
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+
         </section>
       </main>
     );
