@@ -862,56 +862,56 @@ export default function InterviewLauncher({
 
   if (!mounted) {
     return (
-      <main className="mx-auto min-h-screen max-w-[1750px] bg-[#f3f8fa] p-5 md:p-6">
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">Loading interview session...</section>
+      <main className="mx-auto min-h-screen max-w-[1750px] bg-[#0b0c10] p-5 md:p-6">
+        <section className="rounded-2xl border border-white/10 bg-[#12121a] p-6 text-sm text-slate-400 shadow-sm">Loading interview session...</section>
       </main>
     );
   }
 
   if (status !== "in_progress") {
     return (
-      <main className="mx-auto min-h-screen max-w-[900px] bg-[#f3f8fa] p-5 md:p-10">
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
-          <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Kovidam AI Interview</p>
-          <h1 className="mt-2 text-3xl font-semibold text-slate-900">Before Interview Starts</h1>
-          <p className="mt-2 text-sm text-slate-500">Session ID: {sessionId}</p>
-          <p className="mt-1 text-sm text-slate-500">Candidate: {candidateName} • {candidateEmail}</p>
-          <p className="mt-1 text-sm text-slate-500">Role: {jobTitle}</p>
+      <main className="mx-auto min-h-screen max-w-[900px] bg-[#0b0c10] p-5 md:p-10">
+        <section className="rounded-2xl border border-white/10 bg-[#12121a] p-6 shadow-[0_0_20px_rgba(99,102,241,0.05)] md:p-8">
+          <p className="text-xs uppercase tracking-[0.22em] text-indigo-400">KOVIदम् AI Interview</p>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Before Interview Starts</h1>
+          <p className="mt-2 text-sm text-slate-400">Session ID: {sessionId}</p>
+          <p className="mt-1 text-sm text-slate-400">Candidate: {candidateName} • {candidateEmail}</p>
+          <p className="mt-1 text-sm text-slate-400">Role: {jobTitle}</p>
 
           <div className="mt-6 grid grid-cols-1 gap-3">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <p className="mb-2 text-sm font-semibold text-slate-800">Live Camera Preview</p>
-              <div className="relative aspect-video overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+            <div className="rounded-xl border border-white/10 bg-[#0a0a12] p-3">
+              <p className="mb-2 text-sm font-semibold text-slate-300">Live Camera Preview</p>
+              <div className="relative aspect-video overflow-hidden rounded-lg border border-white/10 bg-slate-900">
                 <video ref={userVideoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
                 {!cameraOn ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-200">
+                  <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">
                     Camera preview appears here after permission
                   </div>
                 ) : null}
               </div>
             </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "camera" ? "border-teal-300 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
-              <p className="font-semibold text-slate-800">Step 1: Camera Access</p>
-              <p className="mt-1 text-sm text-slate-500">{cameraOn ? "Granted" : "Required before interview can start."}</p>
+            <div className={`rounded-xl border p-4 ${setupStep === "camera" ? "border-indigo-500/50 bg-indigo-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
+              <p className="font-semibold text-slate-200">Step 1: Camera Access</p>
+              <p className="mt-1 text-sm text-slate-400">{cameraOn ? "Granted" : "Required before interview can start."}</p>
             </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "microphone" ? "border-teal-300 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
-              <p className="font-semibold text-slate-800">Step 2: Microphone Access</p>
-              <p className="mt-1 text-sm text-slate-500">{micOn ? "Granted" : "Required after camera step."}</p>
+            <div className={`rounded-xl border p-4 ${setupStep === "microphone" ? "border-indigo-500/50 bg-indigo-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
+              <p className="font-semibold text-slate-200">Step 2: Microphone Access</p>
+              <p className="mt-1 text-sm text-slate-400">{micOn ? "Granted" : "Required after camera step."}</p>
             </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "screen" ? "border-teal-300 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
-              <p className="font-semibold text-slate-800">Step 3: Screen Share</p>
-              <p className="mt-1 text-sm text-slate-500">{sharingScreen ? "Granted" : "Required after microphone step."}</p>
+            <div className={`rounded-xl border p-4 ${setupStep === "screen" ? "border-indigo-500/50 bg-indigo-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
+              <p className="font-semibold text-slate-200">Step 3: Screen Share</p>
+              <p className="mt-1 text-sm text-slate-400">{sharingScreen ? "Granted" : "Required after microphone step."}</p>
             </div>
-            <div className={`rounded-xl border p-4 ${setupStep === "ready" ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}>
-              <p className="font-semibold text-slate-800">Step 4: Start Interview</p>
-              <p className="mt-1 text-sm text-slate-500">
+            <div className={`rounded-xl border p-4 ${setupStep === "ready" ? "border-emerald-500/50 bg-emerald-500/10" : "border-white/10 bg-[#0a0a12]"}`}>
+              <p className="font-semibold text-slate-200">Step 4: Start Interview</p>
+              <p className="mt-1 text-sm text-slate-400">
                 Internet: {internetQuality === "good" ? "Stable" : internetQuality === "unstable" ? "Unstable" : "Offline"}
               </p>
             </div>
           </div>
 
           <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <button onClick={runDeviceCheck} className="rounded-lg bg-slate-100 px-3 py-3 text-sm text-slate-700 ring-1 ring-slate-200">
+            <button onClick={runDeviceCheck} className="rounded-lg bg-white/5 px-3 py-3 text-sm text-slate-300 ring-1 ring-white/10 hover:bg-white/10 transition">
               {checkState === "checking"
                 ? "Checking..."
                 : setupStep === "camera"
@@ -925,52 +925,52 @@ export default function InterviewLauncher({
             <button
               onClick={startInterview}
               disabled={!canStart}
-              className="rounded-lg bg-teal-500 px-3 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-lg bg-indigo-600 px-3 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 hover:bg-indigo-500 transition"
             >
               Start Interview
             </button>
           </div>
 
-          {startBlockReason ? <p className="mt-3 text-sm text-amber-600">{startBlockReason}</p> : null}
-          {message ? <p className="mt-2 text-sm text-slate-600">{message}</p> : null}
+          {startBlockReason ? <p className="mt-3 text-sm text-amber-500">{startBlockReason}</p> : null}
+          {message ? <p className="mt-2 text-sm text-slate-400">{message}</p> : null}
         </section>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-[1750px] bg-[#f3f8fa] p-5 md:p-6">
+    <main className="mx-auto min-h-screen max-w-[1750px] bg-[#0b0c10] p-5 md:p-6">
       <div className="grid grid-cols-[56px_1fr] gap-4 md:gap-6">
-        <aside className="flex flex-col items-center rounded-2xl border border-slate-200 bg-white py-4 shadow-sm">
-          <div className="mb-5 h-9 w-9 rounded-xl bg-gradient-to-br from-accent to-accent2" />
+        <aside className="flex flex-col items-center rounded-2xl border border-white/10 bg-[#12121a] py-4 shadow-sm">
+          <div className="mb-5 h-9 w-9 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-500" />
           {NAV_ITEMS.map((item, idx) => (
             <button
               key={item}
               onClick={() => goToSection(item)}
-              className={`mb-3 h-10 w-10 rounded-xl text-xs ring-1 transition ${navActive === item ? "bg-gradient-to-br from-teal-600 to-cyan-500 text-white ring-teal-400/60" : "bg-slate-100 text-slate-500 ring-slate-200 hover:ring-teal-300"}`}
+              className={`mb-3 h-10 w-10 rounded-xl text-xs ring-1 transition ${navActive === item ? "bg-gradient-to-br from-indigo-600 to-blue-500 text-white ring-indigo-400/60" : "bg-white/5 text-slate-400 ring-white/10 hover:ring-indigo-500/50"}`}
               title={item}
             >
               {idx + 1}
             </button>
           ))}
-          <div className="mt-auto h-9 w-9 rounded-full bg-panel/70 ring-1 ring-muted/30" />
+          <div className="mt-auto h-9 w-9 rounded-full bg-white/5 ring-1 ring-white/10" />
         </aside>
 
         <section className="space-y-4 md:space-y-6">
-          <header id="topbar" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+          <header id="topbar" className="rounded-2xl border border-white/10 bg-[#12121a] p-4 shadow-sm md:p-5">
             <div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
               <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Kovidam AI Interview</p>
+                <p className="text-xs uppercase tracking-[0.22em] text-indigo-400">KOVIदम् AI Interview</p>
                 <div className="mt-2 flex items-center gap-3">
-                  <h1 className="text-3xl font-semibold text-slate-900">AI Interview Session</h1>
-                  <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-sm text-emerald-700">
+                  <h1 className="text-3xl font-semibold text-white">AI Interview Session</h1>
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-sm text-emerald-400">
                     Live
                   </span>
                 </div>
-                <p className="mt-2 text-sm text-slate-500">Session ID: {sessionId}</p>
+                <p className="mt-2 text-sm text-slate-400">Session ID: {sessionId}</p>
               </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                <p className="text-xs uppercase tracking-[0.15em] text-slate-400">Environment</p>
+              <div className="rounded-xl border border-white/10 bg-[#0a0a12] px-4 py-3 text-sm text-slate-300">
+                <p className="text-xs uppercase tracking-[0.15em] text-indigo-400">Environment</p>
                 <p className="mt-1 font-medium">
                   {cameraOn ? "Webcam" : "Webcam Off"} + {micOn ? "Mic" : "Mic Off"} +{" "}
                   {internetQuality === "good" ? "Stable Internet" : internetQuality === "unstable" ? "Internet Unstable" : "Internet Offline"}
@@ -979,7 +979,7 @@ export default function InterviewLauncher({
               <div className="flex justify-start md:justify-end">
                 <button
                   onClick={endInterview}
-                  className="rounded-xl bg-rose-600/90 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-900/35"
+                  className="rounded-xl bg-rose-600/90 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-900/35 hover:bg-rose-500 transition"
                 >
                   End Interview
                 </button>
@@ -994,10 +994,10 @@ export default function InterviewLauncher({
             <div className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto">
 
               {/* Interview Progress */}
-              <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400">Progress</h3>
-                  <span className="rounded-full bg-teal-50 px-2 py-0.5 text-xs font-medium text-teal-600">{progress}%</span>
+                  <span className="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-400">{progress}%</span>
                 </div>
                 <div className="mt-4 space-y-3">
                   {[
@@ -1008,11 +1008,11 @@ export default function InterviewLauncher({
                   ].map((step) => (
                     <div key={step.label}>
                       <div className="flex items-center justify-between text-xs">
-                        <p className="font-medium text-slate-600">{step.label}</p>
+                        <p className="font-medium text-slate-300">{step.label}</p>
                         <p className="text-slate-400">{step.pct}%</p>
                       </div>
-                      <div className="mt-1.5 h-1.5 rounded-full bg-slate-100">
-                        <div className="h-1.5 rounded-full bg-gradient-to-r from-teal-400 to-cyan-500 transition-all duration-500" style={{ width: `${step.pct}%` }} />
+                      <div className="mt-1.5 h-1.5 rounded-full bg-white/10">
+                        <div className="h-1.5 rounded-full bg-gradient-to-r from-indigo-400 to-blue-500 transition-all duration-500" style={{ width: `${step.pct}%` }} />
                       </div>
                     </div>
                   ))}
@@ -1020,38 +1020,38 @@ export default function InterviewLauncher({
               </div>
 
               {/* Live Transcript */}
-              <div className="flex flex-1 flex-col rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+              <div className="flex flex-1 flex-col rounded-2xl border border-white/10 bg-[#12121a] shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
                   <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400">Transcript</h3>
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-teal-400"></span>
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-400"></span>
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[340px]">
                   {history.length === 0 ? (
-                    <p className="text-xs text-slate-400 text-center mt-8">Conversation will appear here...</p>
+                    <p className="text-xs text-slate-500 text-center mt-8">Conversation will appear here...</p>
                   ) : history.map((turn, idx) => (
-                    <div key={`${turn.role}-${idx}`} className={`rounded-xl p-3 text-xs ${turn.role === "assistant" ? "bg-slate-50 border border-slate-100" : "bg-teal-50 border border-teal-100 ml-4"}`}>
-                      <p className={`mb-1 font-bold uppercase tracking-wider text-[10px] ${turn.role === "assistant" ? "text-slate-400" : "text-teal-600"}`}>
+                    <div key={`${turn.role}-${idx}`} className={`rounded-xl p-3 text-xs ${turn.role === "assistant" ? "bg-[#0a0a12] border border-white/5" : "bg-indigo-900/20 border border-indigo-500/30 ml-4"}`}>
+                      <p className={`mb-1 font-bold uppercase tracking-wider text-[10px] ${turn.role === "assistant" ? "text-slate-500" : "text-indigo-400"}`}>
                         {turn.role === "assistant" ? "🤖 AI" : "👤 You"}
                       </p>
-                      <p className="leading-relaxed text-slate-700">{turn.content}</p>
+                      <p className="leading-relaxed text-slate-300">{turn.content}</p>
                     </div>
                   ))}
                 </div>
               </div>
 
               {/* Security Event Log */}
-              <div className="rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+              <div className="rounded-2xl border border-white/10 bg-[#12121a] shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
                   <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400">Security Log</h3>
-                  <span className={`h-2 w-2 rounded-full ${securityEvents.length > 0 ? "bg-rose-400 animate-pulse" : "bg-emerald-400"}`}></span>
+                  <span className={`h-2 w-2 rounded-full ${securityEvents.length > 0 ? "bg-rose-500 animate-pulse" : "bg-emerald-500"}`}></span>
                 </div>
                 <div className="max-h-36 overflow-y-auto p-3 space-y-1">
                   {securityEvents.length === 0 ? (
-                    <p className="text-xs text-slate-400 py-2 text-center">No violations detected</p>
+                    <p className="text-xs text-slate-500 py-2 text-center">No violations detected</p>
                   ) : securityEvents.map((evt, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs">
-                      <span className="mt-0.5 text-rose-400">⚠</span>
-                      <span className="text-slate-500">[{evt.time}] {evt.event}</span>
+                      <span className="mt-0.5 text-rose-500">⚠</span>
+                      <span className="text-slate-400">[{evt.time}] {evt.event}</span>
                     </div>
                   ))}
                 </div>
@@ -1064,22 +1064,22 @@ export default function InterviewLauncher({
               <canvas ref={faceCanvasRef} className="hidden" />
 
               {/* Main video area */}
-              <div className="relative flex-1 overflow-hidden rounded-3xl bg-slate-950 shadow-2xl min-h-[520px]">
+              <div className="relative flex-1 overflow-hidden rounded-3xl bg-[#0a0a12] shadow-[0_0_40px_rgba(79,70,229,0.1)] border border-white/5 min-h-[520px]">
                 {/* AI Avatar Background */}
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
-                  <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_30%_20%,rgba(20,184,166,0.08),transparent_60%)]" />
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-[#0b0c10] via-[#0a0a12] to-[#0b0c10]">
+                  <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_30%_20%,rgba(99,102,241,0.08),transparent_60%)]" />
                   <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_70%_80%,rgba(59,130,246,0.06),transparent_60%)]" />
 
                   {/* Avatar orb */}
                   <div className="relative flex h-52 w-52 items-center justify-center">
                     <div className={`absolute inset-0 rounded-full transition-all duration-500 ${loadingQuestion ? "animate-spin" : ""}`}
-                      style={{ background: "conic-gradient(from 0deg, rgba(20,184,166,0.3), rgba(59,130,246,0.1), rgba(20,184,166,0.3))" }} />
-                    <div className="absolute inset-3 animate-pulse rounded-full bg-teal-500/10 blur-xl" />
-                    <div className="absolute inset-6 rounded-full bg-gradient-to-br from-teal-400/20 to-blue-500/20 backdrop-blur-sm ring-1 ring-teal-400/30" />
+                      style={{ background: "conic-gradient(from 0deg, rgba(99,102,241,0.3), rgba(59,130,246,0.1), rgba(99,102,241,0.3))" }} />
+                    <div className="absolute inset-3 animate-pulse rounded-full bg-indigo-500/10 blur-xl" />
+                    <div className="absolute inset-6 rounded-full bg-gradient-to-br from-indigo-500/20 to-blue-500/20 backdrop-blur-sm ring-1 ring-indigo-500/30" />
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="flex items-end gap-1.5">
                         {Array.from({ length: 7 }).map((_, i) => (
-                          <div key={i} className="w-1.5 rounded-full bg-gradient-to-t from-teal-400 to-cyan-300 shadow-lg shadow-teal-400/30"
+                          <div key={i} className="w-1.5 rounded-full bg-gradient-to-t from-indigo-400 to-blue-400 shadow-[0_0_10px_rgba(99,102,241,0.5)]"
                             style={{ height: listening ? `${8 + Math.random() * 20}px` : `${10 + (i % 4) * 10}px`, animation: `pulse ${0.5 + i * 0.1}s ease-in-out infinite alternate`, transition: "height 0.15s" }} />
                         ))}
                       </div>
@@ -1087,68 +1087,68 @@ export default function InterviewLauncher({
                   </div>
 
                   <div className="mt-8 text-center">
-                    <p className="text-lg font-light tracking-wide text-white/90">
+                    <p className="text-lg font-light tracking-wide text-white">
                       {listening ? "Listening..." : loadingQuestion ? "Generating next question..." : message || "AI Interviewer"}
                     </p>
-                    <p className="mt-1 text-sm text-white/40">Kovidam AI • {jobTitle}</p>
+                    <p className="mt-1 text-sm text-slate-400">KOVIदम् AI • {jobTitle}</p>
                   </div>
                 </div>
 
                 {/* Top bar */}
                 <div className="absolute inset-x-0 top-0 flex items-center justify-between p-5">
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-2 rounded-full bg-black/40 px-4 py-2 text-sm font-medium text-white backdrop-blur-xl ring-1 ring-white/10">
+                    <div className="flex items-center gap-2 rounded-full bg-black/60 px-4 py-2 text-sm font-medium text-white backdrop-blur-xl ring-1 ring-white/10">
                       <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400"></span>
                       AI Interviewer • Live
                     </div>
-                    <div className="rounded-full bg-black/40 px-3 py-2 text-xs font-mono text-white/70 backdrop-blur-xl ring-1 ring-white/10">
+                    <div className="rounded-full bg-black/60 px-3 py-2 text-xs font-mono text-slate-300 backdrop-blur-xl ring-1 ring-white/10">
                       {formatClock(elapsedSec)}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${faceVisible ? "bg-emerald-500/20 text-emerald-300 ring-emerald-500/30" : "bg-rose-500/30 text-rose-300 ring-rose-500/30 animate-pulse"}`}>
+                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${faceVisible ? "bg-emerald-500/20 text-emerald-400 ring-emerald-500/30" : "bg-rose-500/30 text-rose-400 ring-rose-500/30 animate-pulse"}`}>
                       {faceVisible ? "✓ Face OK" : "⚠ No Face"}
                     </div>
-                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${sharingScreen ? "bg-teal-500/20 text-teal-300 ring-teal-500/30" : "bg-rose-500/30 text-rose-300 ring-rose-500/30"}`}>
+                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${sharingScreen ? "bg-indigo-500/20 text-indigo-400 ring-indigo-500/30" : "bg-rose-500/30 text-rose-400 ring-rose-500/30"}`}>
                       {sharingScreen ? "✓ Screen" : "⚠ No Screen"}
                     </div>
-                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${internetQuality === "good" ? "bg-emerald-500/20 text-emerald-300 ring-emerald-500/30" : "bg-rose-500/30 text-rose-300 ring-rose-500/30 animate-pulse"}`}>
+                    <div className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur-xl ring-1 ${internetQuality === "good" ? "bg-emerald-500/20 text-emerald-400 ring-emerald-500/30" : "bg-rose-500/30 text-rose-400 ring-rose-500/30 animate-pulse"}`}>
                       {internetQuality === "good" ? "✓ Stable" : "⚠ " + internetQuality}
                     </div>
                   </div>
                 </div>
 
                 {/* PiP candidate video */}
-                <div className="absolute bottom-24 right-5 w-56 overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl ring-1 ring-white/5">
+                <div className="absolute bottom-24 right-5 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a12] shadow-2xl ring-1 ring-white/5">
                   <video ref={userVideoRef} autoPlay muted playsInline className="h-full w-full object-cover aspect-video" />
                   {!cameraOn && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-slate-900/95 text-xs text-white/50">Camera off</div>
+                    <div className="absolute inset-0 flex items-center justify-center bg-slate-900/95 text-xs text-slate-400">Camera off</div>
                   )}
                   {/* Face detection indicator on PiP */}
                   <div className={`absolute inset-0 rounded-2xl ring-2 transition-all ${!faceVisible ? "ring-rose-500 animate-pulse" : "ring-transparent"}`} />
-                  <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent p-2">
+                  <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-2">
                     <p className="text-xs font-medium text-white">{candidateName}</p>
                   </div>
                 </div>
 
                 {/* Bottom controls */}
                 <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-3 p-6">
-                  <div className="flex items-center gap-3 rounded-2xl bg-black/60 px-6 py-3 backdrop-blur-xl ring-1 ring-white/10 shadow-2xl">
-                    <button onClick={toggleMic} title="Microphone" className={`group relative flex h-12 w-12 items-center justify-center rounded-xl transition-all ${micOn ? "bg-white/10 text-white hover:bg-white/20" : "bg-rose-500 text-white"}`}>
+                  <div className="flex items-center gap-3 rounded-2xl bg-[#12121a]/80 px-6 py-3 backdrop-blur-xl ring-1 ring-white/10 shadow-2xl">
+                    <button onClick={toggleMic} title="Microphone" className={`group relative flex h-12 w-12 items-center justify-center rounded-xl transition-all ${micOn ? "bg-white/5 text-slate-300 hover:bg-white/10" : "bg-rose-600 text-white"}`}>
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">{micOn ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /> : <><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></>}</svg>
                     </button>
-                    <button onClick={toggleCamera} title="Camera" className={`flex h-12 w-12 items-center justify-center rounded-xl transition-all ${cameraOn ? "bg-white/10 text-white hover:bg-white/20" : "bg-rose-500 text-white"}`}>
+                    <button onClick={toggleCamera} title="Camera" className={`flex h-12 w-12 items-center justify-center rounded-xl transition-all ${cameraOn ? "bg-white/5 text-slate-300 hover:bg-white/10" : "bg-rose-600 text-white"}`}>
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                     </button>
-                    <button onClick={toggleScreenShare} title="Screen Share" className={`flex h-12 w-12 items-center justify-center rounded-xl transition-all ${sharingScreen ? "bg-teal-500/30 text-teal-300 ring-1 ring-teal-400/40" : "bg-white/10 text-white/60 hover:bg-white/20"}`}>
+                    <button onClick={toggleScreenShare} title="Screen Share" className={`flex h-12 w-12 items-center justify-center rounded-xl transition-all ${sharingScreen ? "bg-indigo-500/20 text-indigo-400 ring-1 ring-indigo-500/30" : "bg-white/5 text-slate-500 hover:bg-white/10"}`}>
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
                     </button>
                     <div className="h-8 w-px bg-white/10" />
-                    <button onClick={startListening} disabled={listening || loadingQuestion || !micOn} className="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-500/20 text-teal-300 ring-1 ring-teal-400/30 transition hover:bg-teal-500/30 disabled:opacity-40">
+                    <button onClick={startListening} disabled={listening || loadingQuestion || !micOn} className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-400 ring-1 ring-indigo-500/30 transition hover:bg-indigo-500/30 disabled:opacity-40">
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" /></svg>
                     </button>
                     <div className="h-8 w-px bg-white/10" />
-                    <button onClick={endInterview} className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-900/30 transition hover:bg-rose-700">
+                    <button onClick={endInterview} className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_0_15px_rgba(225,29,72,0.4)] transition hover:bg-rose-500">
                       End Call
                     </button>
                   </div>
@@ -1190,10 +1190,10 @@ export default function InterviewLauncher({
 
               {/* Auto-listen label */}
               <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
-                <input type="checkbox" checked={autoListen} onChange={(e) => setAutoListen(e.target.checked)} className="rounded" />
+                <input type="checkbox" checked={autoListen} onChange={(e) => setAutoListen(e.target.checked)} className="rounded border-white/20 bg-[#12121a]" />
                 Auto-listen after AI speaks
-                {listening && <span className="ml-2 inline-flex items-center gap-1 text-teal-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal-500" />Listening...</span>}
-                {loadingQuestion && <span className="ml-2 text-slate-400">Generating question...</span>}
+                {listening && <span className="ml-2 inline-flex items-center gap-1 text-indigo-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-500" />Listening...</span>}
+                {loadingQuestion && <span className="ml-2 text-slate-500">Generating question...</span>}
               </label>
             </div>
 
@@ -1201,89 +1201,87 @@ export default function InterviewLauncher({
             <div className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto">
 
               {/* Live Security Status */}
-              <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">
                 <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-4">Security Monitor</h3>
                 <div className="space-y-2">
                   {[
                     { label: "Face Visible", ok: faceVisible, icon: "👤" },
-
-
                     { label: "Camera Active", ok: cameraOn, icon: "📷" },
                     { label: "Microphone Active", ok: micOn, icon: "🎤" },
                     { label: "Screen Sharing", ok: sharingScreen, icon: "🖥" },
                     { label: "Internet Stable", ok: internetQuality === "good", icon: "🌐" },
                     { label: "Tab Focus", ok: tabCountdown === null, icon: "🖱" },
                   ].map(({ label, ok, icon }) => (
-                    <div key={label} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
-                      <div className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                    <div key={label} className="flex items-center justify-between rounded-lg bg-[#0a0a12] border border-white/5 px-3 py-2">
+                      <div className="flex items-center gap-2 text-xs font-medium text-slate-300">
                         <span>{icon}</span>{label}
                       </div>
-                      <span className={`h-2 w-2 rounded-full ${ok ? "bg-emerald-400" : "bg-rose-400 animate-pulse"}`} />
+                      <span className={`h-2 w-2 rounded-full ${ok ? "bg-emerald-500" : "bg-rose-500 animate-pulse"}`} />
                     </div>
                   ))}
                 </div>
                 {screenChanged && (
-                  <div className="mt-3 rounded-lg bg-orange-50 border border-orange-100 px-3 py-2 text-xs text-orange-700">
+                  <div className="mt-3 rounded-lg bg-orange-900/20 border border-orange-500/30 px-3 py-2 text-xs text-orange-400">
                     ⚠ Screen content change detected
                   </div>
                 )}
               </div>
 
               {/* Current Question */}
-              <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="h-2 w-2 rounded-full bg-teal-400"></span>
+                  <span className="h-2 w-2 rounded-full bg-indigo-500"></span>
                   <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400">Current Question</h3>
                 </div>
-                <p className="rounded-xl bg-gradient-to-br from-teal-50 to-cyan-50 border border-teal-100 p-4 text-sm leading-relaxed text-slate-800">{currentQuestion}</p>
+                <p className="rounded-xl bg-indigo-900/10 border border-indigo-500/20 p-4 text-sm leading-relaxed text-slate-200">{currentQuestion}</p>
                 <div className="mt-3 flex items-center justify-between">
-                  <span className="text-xs text-slate-400">⏱ {formatClock(elapsedSec)}</span>
-                  <button onClick={() => setShowQuestionDetails(v => !v)} className="text-xs text-teal-600 hover:underline">{showQuestionDetails ? "Hide" : "Details"}</button>
+                  <span className="text-xs text-slate-500">⏱ {formatClock(elapsedSec)}</span>
+                  <button onClick={() => setShowQuestionDetails(v => !v)} className="text-xs text-indigo-400 hover:underline">{showQuestionDetails ? "Hide" : "Details"}</button>
                 </div>
                 {showQuestionDetails && (
-                  <p className="mt-2 text-xs text-slate-500 bg-slate-50 rounded-lg p-3">AI-generated from your resume context. Expects depth, trade-offs, and real examples.</p>
+                  <p className="mt-2 text-xs text-slate-400 bg-[#0a0a12] border border-white/5 rounded-lg p-3">AI-generated from your resume context. Expects depth, trade-offs, and real examples.</p>
                 )}
               </div>
 
               {/* AI Scoring */}
-              <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">
                 <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-4">Live Scoring</h3>
                 <div className="space-y-3">
                   {[
-                    { label: "Communication", score: liveScores.communication, color: "from-blue-400 to-cyan-500" },
-                    { label: "Confidence", score: liveScores.confidence, color: "from-violet-400 to-purple-500" },
-                    { label: "Technical Depth", score: liveScores.technical, color: "from-teal-400 to-emerald-500" },
-                    { label: "Authenticity", score: liveScores.authenticity, color: "from-amber-400 to-orange-500" },
+                    { label: "Communication", score: liveScores.communication, color: "from-blue-500 to-indigo-500" },
+                    { label: "Confidence", score: liveScores.confidence, color: "from-violet-500 to-purple-500" },
+                    { label: "Technical Depth", score: liveScores.technical, color: "from-indigo-400 to-cyan-500" },
+                    { label: "Authenticity", score: liveScores.authenticity, color: "from-amber-500 to-orange-500" },
                   ].map(({ label, score, color }) => (
                     <div key={label}>
                       <div className="flex justify-between text-xs mb-1">
-                        <span className="text-slate-500">{label}</span>
-                        <span className={`font-semibold ${score >= 7 ? "text-emerald-600" : score >= 5 ? "text-amber-600" : score > 0 ? "text-rose-500" : "text-slate-300"}`}>
+                        <span className="text-slate-400">{label}</span>
+                        <span className={`font-semibold ${score >= 7 ? "text-emerald-400" : score >= 5 ? "text-amber-400" : score > 0 ? "text-rose-400" : "text-slate-500"}`}>
                           {score > 0 ? `${score.toFixed(1)}/10` : "–"}
                         </span>
                       </div>
-                      <div className="h-2 rounded-full bg-slate-100">
+                      <div className="h-2 rounded-full bg-white/10">
                         <div className={`h-2 rounded-full bg-gradient-to-r ${color} transition-all duration-700`} style={{ width: score > 0 ? `${score * 10}%` : "0%" }} />
                       </div>
                     </div>
                   ))}
                 </div>
-                {lastAnalysis && <p className="mt-3 text-xs text-emerald-700 bg-emerald-50 rounded-lg p-3 border border-emerald-100 leading-relaxed">{lastAnalysis}</p>}
-                {liveScores.communication === 0 && <p className="mt-2 text-xs text-slate-400 text-center">Scores update after each answer</p>}
+                {lastAnalysis && <p className="mt-3 text-xs text-emerald-400 bg-emerald-900/20 rounded-lg p-3 border border-emerald-500/30 leading-relaxed">{lastAnalysis}</p>}
+                {liveScores.communication === 0 && <p className="mt-2 text-xs text-slate-500 text-center">Scores update after each answer</p>}
               </div>
 
               {/* Voice Control */}
-              <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">
                 <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-3">Voice</h3>
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={startListening} disabled={listening || loadingQuestion || !micOn} className="rounded-xl bg-teal-500 px-3 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-600 disabled:opacity-40">
+                  <button onClick={startListening} disabled={listening || loadingQuestion || !micOn} className="rounded-xl bg-indigo-600 px-3 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:opacity-40">
                     {listening ? "Listening..." : "Answer"}
                   </button>
-                  <button onClick={stopListening} disabled={!listening} className="rounded-xl bg-slate-100 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-200 disabled:opacity-40">
+                  <button onClick={stopListening} disabled={!listening} className="rounded-xl bg-white/10 px-3 py-2.5 text-xs font-semibold text-slate-300 transition hover:bg-white/20 disabled:opacity-40">
                     Stop
                   </button>
                 </div>
-                <p className="mt-3 text-xs text-slate-400">{candidateName} • {jobTitle}</p>
+                <p className="mt-3 text-xs text-slate-500">{candidateName} • {jobTitle}</p>
               </div>
             </div>
           </div>

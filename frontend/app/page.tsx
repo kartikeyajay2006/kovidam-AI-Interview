@@ -1,152 +1,237 @@
 "use client";
 import Link from "next/link";
-import { Home, ChevronDown, Sparkles, ArrowRight, ShieldCheck, Lock, Target, BrainCircuit, Activity } from "lucide-react";
+import { Home, Sparkles, Settings, ArrowRight, Mic, Shield, Brain, Eye, MessageSquare, Zap } from "lucide-react";
 
 export default function HomePage() {
   return (
     <main className="relative min-h-screen bg-mountains overflow-hidden">
-      {/* Background glow effects */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] ambient-glow rounded-full pointer-events-none" />
 
-      {/* Navbar */}
-      <div className="pt-6 px-4 md:px-8">
-        <header className="mx-auto flex max-w-7xl items-center justify-between">
-          <div className="flex items-center gap-2">
-            {/* Real Kovidam Logo (Recreated in SVG to fix broken image) */}
-            <svg viewBox="0 0 120 100" className="h-10 w-12 text-[#2b90d9] fill-current" preserveAspectRatio="xMidYMid meet">
-              <path d="M49.6,18.8c-2.3-1.6-6-2.5-10.2-2.5c-4.2,0-8.2,1.1-11.4,3.2C21.8,23.7,16.5,31,14.6,39.3c-0.8,3.5-1.1,7.2-0.8,11.2c0.6,9.1,4.7,17.2,11.5,23.3c-2.6,3.6-6,6.3-9.9,7.6c-0.5,0.2-1,0.3-1.5,0.4c0.8-1,1.5-2,2.2-3c4.1-5.7,5.5-12.7,4.3-19.5C18.6,50.1,23.6,40.1,32,32.7c4.6-4.1,10.2-7.2,16.2-8.9c3.1-0.9,6.5-1.4,9.9-1.2C54.6,22.6,51.8,20.4,49.6,18.8z"/>
-              <path d="M78.6,36.4c-4.3-2.1-9.5-3.3-14.7-3.3c-5.7,0-11,1.5-15.6,4c-4.8,2.6-8.7,6.3-11.5,10.7C33.7,52.5,32,58,31.7,63.9c-0.1,2.8,0.3,5.6,1,8.3c2.4-5.3,6.5-9.8,11.5-12.8c3.9-2.3,8.3-3.8,13-4.2c1.9-0.2,3.8-0.2,5.7-0.1C68.9,55.3,74.4,56.7,79,59c1.6-3.8,1.8-8,0.7-11.9C78.4,43.2,75.4,39.3,78.6,36.4z"/>
-            </svg>
-            <span className="text-[26px] font-extrabold text-[#0f172a] tracking-tight flex items-center ml-1">
-              KOVIA<span className="text-[#0d9488] font-semibold tracking-normal ml-1" style={{fontFamily: "system-ui"}}>दम्</span>
+      {/* ── NAVBAR ── */}
+      <div className="pt-5 px-6 md:px-12 relative z-20">
+        <header className="flex items-center justify-between">
+          {/* Logo */}
+          <div className="flex items-center gap-3">
+            <img
+              src="/logo.png"
+              alt=""
+              className="h-20 w-auto object-contain -scale-x-100"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+            <span
+              className="text-[26px] font-extrabold text-white tracking-[0.15em] flex items-center uppercase"
+              style={{ fontFamily: "Inter, sans-serif" }}
+            >
+              KOVI
+              <span
+                className="text-indigo-400 font-bold tracking-normal ml-1.5"
+                style={{ fontFamily: "system-ui" }}
+              >
+                दम्
+              </span>
             </span>
           </div>
 
-          <nav className="hidden glass-nav rounded-full px-6 py-2.5 md:flex items-center gap-6 text-sm font-medium text-slate-600 shadow-sm">
-            <Link href="/" className="flex items-center gap-1.5 text-teal-600 hover:text-teal-700 transition">
-              <Home className="w-4 h-4" /> Home
+          {/* Center Nav Pill */}
+          <nav className="hidden md:flex items-center gap-1 bg-white/[0.03] rounded-full px-2 py-1.5 border border-white/[0.06] backdrop-blur-xl">
+            <Link
+              href="/"
+              className="group flex items-center gap-2 px-5 py-2.5 rounded-full text-white/60 hover:text-white hover:bg-white/[0.06] transition-all duration-300"
+            >
+              <Home className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <span className="text-[13px] font-medium">Home</span>
             </Link>
-            <Link href="/dashboard" className="flex items-center gap-1 hover:text-slate-900 transition-colors">
-              AI Interview <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+            <Link
+              href="/dashboard"
+              className="group flex items-center gap-2 px-5 py-2.5 rounded-full text-white/60 hover:text-white hover:bg-white/[0.06] transition-all duration-300"
+            >
+              <Sparkles className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <span className="text-[13px] font-medium">Interview</span>
+            </Link>
+            <Link
+              href="/settings"
+              className="group flex items-center gap-2 px-5 py-2.5 rounded-full text-white/60 hover:text-white hover:bg-white/[0.06] transition-all duration-300"
+            >
+              <Settings className="w-[18px] h-[18px]" strokeWidth={1.8} />
+              <span className="text-[13px] font-medium">Settings</span>
             </Link>
           </nav>
 
+          {/* Right CTA */}
           <div className="flex items-center gap-3">
-            <Link href="/demo" className="rounded-full bg-teal-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-600/20 hover:bg-teal-700 transition-colors">
+            <Link
+              href="/demo"
+              className="hidden sm:inline-flex rounded-full border border-white/10 px-5 py-2.5 text-[13px] font-semibold text-white/70 hover:text-white hover:border-white/20 transition-all duration-300"
+            >
               Book a Demo
             </Link>
-            <Link href="/dashboard" className="rounded-full bg-white px-6 py-2.5 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-50 transition-colors border border-slate-200">
+            <Link
+              href="/dashboard"
+              className="btn-primary !py-2.5 !px-6 !text-[13px]"
+            >
               Login
             </Link>
           </div>
         </header>
       </div>
 
-      <div className="mx-auto max-w-7xl px-4 md:px-8 pt-24 pb-32 flex flex-col lg:flex-row items-center gap-16 relative z-10">
-        
+      {/* ── HERO SECTION — BALANCED CONTAINER ── */}
+      <div className="mx-auto max-w-7xl px-6 md:px-12 pt-16 md:pt-24 pb-20 flex flex-col lg:flex-row items-center justify-between gap-12 lg:gap-16 relative z-10">
+
         {/* Left Content */}
-        <div className="flex-1 max-w-xl">
-          <div className="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-3 py-1.5 mb-6 shadow-sm">
-            <Sparkles className="w-4 h-4 text-teal-600" />
-            <span className="text-xs font-semibold text-teal-700 tracking-wide">Live Conversational AI Agent</span>
+        <div className="flex-1 max-w-xl animate-fade-up">
+          {/* Badge */}
+          <div className="inline-flex items-center gap-2 bg-indigo-500/[0.08] border border-indigo-500/20 rounded-full px-4 py-1.5 mb-8 animate-fade-up">
+            <div className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+            <span className="text-[12px] font-semibold text-indigo-300 tracking-wide uppercase">
+              AI-Powered Interview Platform
+            </span>
           </div>
 
-          <h1 className="text-5xl lg:text-7xl leading-[1.05] font-bold text-slate-900 mb-6">
-            Autonomous AI <br/>
-            <span className="text-teal-600">Interviews.</span>
+          <h1 className="text-[48px] md:text-[60px] lg:text-[72px] leading-[1.06] font-bold text-white mb-7 tracking-tight animate-fade-up animate-fade-up-delay-1">
+            Conversational AI{" "}
+            <br />
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-blue-400 to-violet-400 animate-gradient">
+              Interviews. Real Insights.
+            </span>
           </h1>
 
-          <p className="text-slate-500 text-lg mb-10 leading-relaxed font-medium">
-            Deploy Kovidam's conversational AI agent to conduct live technical and behavioral interviews. Designed exclusively for your shortlisted candidates, our AI dynamically adapts to responses, evaluates system design, and provides real-time scoring so you hire the absolute best.
+          <p className="text-white/45 text-[17px] md:text-[18px] mb-10 leading-[1.7] max-w-xl font-medium animate-fade-up animate-fade-up-delay-2">
+            Kovidam AI conducts live, deep technical interviews — analyzing
+            communication, technical depth, and authenticity in real time.
+            Completely bias-free candidate evaluation.
           </p>
 
-          <div className="flex items-center gap-4 mb-20">
-            <Link href="/dashboard" className="rounded-full bg-teal-600 px-7 py-3.5 text-sm font-bold text-white shadow-lg shadow-teal-600/25 hover:bg-teal-700 transition flex items-center gap-2">
-              Start Interview <ArrowRight className="w-4 h-4" />
+          <div className="flex flex-wrap items-center gap-4 animate-fade-up animate-fade-up-delay-3">
+            <Link href="/dashboard" className="btn-primary">
+              Start Interviewing
+              <ArrowRight className="w-4 h-4" />
             </Link>
-            <Link href="/dashboard/analytics" className="rounded-full bg-white border border-slate-300 px-7 py-3.5 text-sm font-bold text-slate-700 hover:border-slate-400 hover:bg-slate-50 transition flex items-center gap-2 shadow-sm">
-              View Analytics <ArrowRight className="w-4 h-4" />
+            <Link href="/demo" className="btn-secondary">
+              Watch Demo
             </Link>
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
-             <div className="flex items-center gap-2">
-                <Target className="w-5 h-5 text-teal-600" />
-                <span className="text-[11px] uppercase tracking-wider font-bold text-slate-600">Strict Candidate<br/>Scoring</span>
-             </div>
-             <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-slate-400" />
-                <span className="text-[11px] uppercase tracking-wider font-bold text-slate-600">Bias-Free<br/>Hiring</span>
-             </div>
-             <div className="flex items-center gap-2">
-                <Lock className="w-5 h-5 text-slate-400" />
-                <span className="text-[11px] uppercase tracking-wider font-bold text-slate-600">Enterprise-Grade<br/>Security</span>
-             </div>
-             <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-slate-400" />
-                <span className="text-[11px] uppercase tracking-wider font-bold text-slate-600">Privacy<br/>First</span>
-             </div>
+          {/* Trust indicators */}
+          <div className="flex flex-wrap items-center gap-6 mt-14 animate-fade-up animate-fade-up-delay-3">
+            <div className="flex items-center gap-2 text-white/25">
+              <Shield className="w-4 h-4" />
+              <span className="text-[12px] font-medium">SOC 2 Compliant</span>
+            </div>
+            <div className="w-px h-4 bg-white/10" />
+            <div className="flex items-center gap-2 text-white/25">
+              <Eye className="w-4 h-4" />
+              <span className="text-[12px] font-medium">Anti-Cheat Detection</span>
+            </div>
+            <div className="w-px h-4 bg-white/10" />
+            <div className="flex items-center gap-2 text-white/25">
+              <Zap className="w-4 h-4" />
+              <span className="text-[12px] font-medium">Real-time Scoring</span>
+            </div>
           </div>
         </div>
 
-        {/* Right Content - Circular Graph */}
-        <div className="flex-1 relative w-full aspect-square max-w-[550px] flex items-center justify-center">
-           {/* Rings */}
-           <div className="absolute inset-0 border-[1.5px] border-teal-100 rounded-full animate-spin-slow" style={{ animationDuration: '60s' }}></div>
-           <div className="absolute inset-12 border-[1.5px] border-teal-200/40 rounded-full border-dashed animate-spin-slow" style={{ animationDirection: 'reverse' }}></div>
-           <div className="absolute inset-28 border-[1.5px] border-teal-100 rounded-full"></div>
+        {/* Right Content — Premium Orbit Visualization (Perfectly Proportioned) */}
+        <div className="flex-1 relative w-full max-w-[470px] aspect-square flex items-center justify-center mx-auto lg:mx-0">
 
-           {/* Center Dolphin */}
-           <div className="w-56 h-56 bg-white rounded-full shadow-[0_20px_60px_rgba(13,148,136,0.15)] flex items-center justify-center z-10 relative">
-              <div className="w-40 h-40 bg-gradient-to-tr from-teal-50 to-white rounded-full flex items-center justify-center shadow-inner border border-teal-50">
-                 <svg viewBox="0 0 100 100" className="w-24 h-24 text-teal-600 fill-current drop-shadow-md">
-                    <path d="M72.9 44.8c-2.3-4.8-5.9-8.7-10.4-11.2-4.5-2.5-9.6-3.8-14.8-3.8-8.6 0-16.7 3.6-22.6 9.8C18.6 46.5 15 55.4 15 64.9c0 .4 0 .9.1 1.3 6.9-6.3 16.2-9.9 25.8-9.9 6.2 0 12.2 1.6 17.5 4.6 4.3 2.4 8 5.6 11.1 9.5 5.5-3.6 9.7-8.9 12-15.1 1.5-4.2 1.9-8.7 1.1-13.1-2.9 2-6.5 3-10 2.8.1-.1.2-.2.3-.2z"/>
-                    <path d="M37.9 35.1c4.5-5.9 11.2-9.9 18.6-11.2 5.1-1 10.3-.6 15.2 1.2-3.1-4.1-7.2-7.5-12-9.7-6.2-2.8-13.1-3.6-19.8-2.2-6.7 1.4-12.8 4.9-17.5 9.8-4.7 4.9-7.9 11.1-9.3 17.8-.3 1.4-.4 2.8-.5 4.2 3.8-5 8.7-9.1 14.3-12.1 3.5-1.9 7.2-3.3 11-4.2v.1-.1z"/>
-                 </svg>
-              </div>
-           </div>
+          {/* Ambient glow behind the orb */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-[350px] h-[350px] rounded-full bg-indigo-500/[0.07] blur-[100px] animate-pulse-glow" />
+          </div>
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-[220px] h-[220px] rounded-full bg-violet-500/[0.09] blur-[70px] animate-pulse-glow" style={{ animationDelay: "2s" }} />
+          </div>
 
-           {/* Nodes */}
-           <div className="absolute top-2 right-[15%] bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '0s' }}>
-              System Design
-           </div>
-           <div className="absolute top-[25%] -right-8 bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '1s' }}>
-              GitHub Analysis
-           </div>
-           <div className="absolute top-[20%] -left-6 bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '2s' }}>
+          {/* Orbit Rings */}
+          <div className="orbit-ring orbit-ring-1">
+            <div className="orbit-dot" style={{ top: "8%", right: "12%" }} />
+            <div className="orbit-dot" style={{ bottom: "12%", left: "10%" }} />
+          </div>
+          <div className="orbit-ring orbit-ring-2" />
+          <div className="orbit-ring orbit-ring-3" />
+
+          {/* Curved Neural Connection Lines (Engages the screen beautifully) */}
+          <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" viewBox="0 0 420 420">
+            {/* Live Voice AI */}
+            <path d="M 210,210 Q 260,90 320,15" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" strokeDasharray="3 3" className="animate-pulse" />
+            {/* Anti-Cheating */}
+            <path d="M 210,210 Q 330,160 410,75" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" />
+            {/* Technical Depth */}
+            <path d="M 210,210 Q 90,160 10,95" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" />
+            {/* Confidence Scoring */}
+            <path d="M 210,210 Q 350,260 415,290" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" />
+            {/* System Design */}
+            <path d="M 210,210 Q 80,250 -10,270" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" strokeDasharray="3 3" className="animate-pulse" />
+            {/* Role-Specific */}
+            <path d="M 210,210 Q 300,340 370,410" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" />
+            {/* Communication */}
+            <path d="M 210,210 Q 110,340 50,405" stroke="rgba(129, 140, 248, 0.3)" strokeWidth="1.2" fill="none" />
+          </svg>
+
+          {/* Center Orb — Dolphin with transparent BG */}
+          <div className="center-orb">
+            <div className="w-[120px] h-[120px] rounded-full bg-gradient-to-br from-[#14142e] to-[#0b0b18] flex items-center justify-center border border-white/[0.06] overflow-hidden">
+              <img
+                src="/logo.png"
+                alt=""
+                className="w-20 h-20 object-contain -scale-x-100 drop-shadow-[0_0_24px_rgba(139,92,246,0.6)]"
+              />
+            </div>
+          </div>
+
+          {/* Feature Tags — positioned around the orbit */}
+          <div className="feature-tag absolute -top-2 right-[18%] animate-float" style={{ animationDelay: "0s" }}>
+            <span className="flex items-center gap-2">
+              <Mic className="w-3.5 h-3.5 text-indigo-400" />
+              Live Voice AI
+            </span>
+          </div>
+          <div className="feature-tag absolute top-[16%] -right-4 animate-float" style={{ animationDelay: "1s" }}>
+            <span className="flex items-center gap-2">
+              <Shield className="w-3.5 h-3.5 text-rose-400" />
+              Anti-Cheating
+            </span>
+          </div>
+          <div className="feature-tag absolute top-[20%] -left-2 animate-float" style={{ animationDelay: "2s" }}>
+            <span className="flex items-center gap-2">
+              <Brain className="w-3.5 h-3.5 text-violet-400" />
               Technical Depth
-           </div>
-           <div className="absolute bottom-[28%] -right-8 bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '3s' }}>
-              Problem Solving
-           </div>
-           <div className="absolute bottom-[25%] -left-8 bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '4s' }}>
+            </span>
+          </div>
+          <div className="feature-tag absolute bottom-[30%] -right-6 animate-float" style={{ animationDelay: "3s" }}>
+            <span className="flex items-center gap-2">
+              <Eye className="w-3.5 h-3.5 text-emerald-400" />
+              Confidence Scoring
+            </span>
+          </div>
+          <div className="feature-tag absolute bottom-[36%] -left-8 animate-float" style={{ animationDelay: "4s" }}>
+            <span className="flex items-center gap-2">
+              <MessageSquare className="w-3.5 h-3.5 text-amber-400" />
+              System Design
+            </span>
+          </div>
+          <div className="feature-tag absolute -bottom-2 right-[10%] animate-float" style={{ animationDelay: "5s" }}>
+            <span className="flex items-center gap-2">
+              <Zap className="w-3.5 h-3.5 text-cyan-400" />
+              Role-Specific
+            </span>
+          </div>
+          <div className="feature-tag absolute bottom-2 left-[8%] animate-float" style={{ animationDelay: "6s" }}>
+            <span className="flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
               Communication
-           </div>
-           <div className="absolute bottom-4 right-[10%] bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '5s' }}>
-              Resume Intelligence
-           </div>
-           <div className="absolute bottom-2 left-[15%] bg-white border border-slate-100 shadow-md px-5 py-2.5 rounded-full text-xs font-bold text-slate-800 animate-float" style={{ animationDelay: '6s' }}>
-              Execution Maturity
-           </div>
-           
-           {/* Connecting dots */}
-           <div className="absolute top-[18%] left-[75%] w-2 h-2 bg-teal-400 rounded-full shadow-[0_0_10px_rgba(45,212,191,0.8)]"></div>
-           <div className="absolute top-[75%] left-[20%] w-2 h-2 bg-teal-400 rounded-full shadow-[0_0_10px_rgba(45,212,191,0.8)]"></div>
-           <div className="absolute top-[50%] left-[8%] w-2 h-2 bg-teal-400 rounded-full shadow-[0_0_10px_rgba(45,212,191,0.8)]"></div>
-           <div className="absolute top-[85%] left-[60%] w-2 h-2 bg-teal-400 rounded-full shadow-[0_0_10px_rgba(45,212,191,0.8)]"></div>
-           <div className="absolute top-[15%] left-[30%] w-2 h-2 bg-teal-400 rounded-full shadow-[0_0_10px_rgba(45,212,191,0.8)]"></div>
+            </span>
+          </div>
         </div>
-
       </div>
-      
-      {/* Ask Kovidam AI Floating button */}
+
+      {/* ── FLOATING AI ASSISTANT ── */}
       <div className="fixed bottom-8 right-8 z-50 flex items-center gap-3">
-         <div className="bg-white px-5 py-3 rounded-full shadow-lg border border-slate-100 text-sm font-bold text-slate-800 cursor-pointer hover:-translate-y-1 transition-transform">
-           Ask Kovidam AI
-         </div>
-         <button className="w-14 h-14 bg-teal-600 rounded-full shadow-lg shadow-teal-600/30 flex items-center justify-center text-white hover:bg-teal-700 transition hover:scale-105">
-           <Sparkles className="w-6 h-6" />
-         </button>
+        <div className="bg-[#0a0a14]/90 backdrop-blur-xl px-5 py-3 rounded-full shadow-lg border border-white/[0.06] text-[13px] font-semibold text-white/60 cursor-pointer hover:-translate-y-0.5 hover:text-white transition-all duration-300">
+          Ask Kovidam AI
+        </div>
+        <button className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-full shadow-[0_0_24px_rgba(99,102,241,0.4)] flex items-center justify-center text-white hover:shadow-[0_0_32px_rgba(99,102,241,0.6)] transition-all duration-300 hover:scale-105">
+          <Sparkles className="w-5 h-5" />
+        </button>
       </div>
 
     </main>
