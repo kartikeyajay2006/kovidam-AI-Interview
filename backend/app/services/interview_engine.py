@@ -59,8 +59,8 @@ def _trim_history(history: Iterable[dict]) -> list[dict]:
         role = (turn.get("role") or "").strip().lower()
         content = (turn.get("content") or "").strip()
         if role in {"assistant", "candidate"} and content:
-            trimmed.append({"role": role, "content": content[:1000]})
-    return trimmed[-12:]
+            trimmed.append({"role": role, "content": content})
+    return trimmed
 
 
 def _normalize(text: str) -> str:
@@ -248,15 +248,12 @@ def _generate_ai_followups(
     difficulty: str,
     parsed_sections: dict,
     cleaned_history: list[dict],
-) -> tuple[list[str], str]:
+) -> tuple[str, str]:
     if not settings.openai_api_key:
-        return [
-            "What was the hardest technical challenge in that context?",
-            "What would you improve if you rebuilt it today?",
-        ], "api_skipped:no_openai_key"
+        return "What would you improve if you rebuilt it today?", "api_skipped:no_openai_key"
 
     prompt = {
-        "task": "Generate exactly 2 technical follow-up interview questions.",
+        "task": "Generate EXACTLY ONE technical follow-up interview question based deeply on the candidate's last answer.",
         "main_question": main_question,
         "job_context": {
             "role_title": role_title,
@@ -270,16 +267,16 @@ def _generate_ai_followups(
             "experience": parsed_sections.get("experience", []),
             "work_experience_years": parsed_sections.get("work_experience_years", ""),
         },
-        "history": cleaned_history[-10:],
+        "full_interview_history": cleaned_history,
         "constraints": [
             "Return strict JSON only",
             "Do not repeat earlier asked questions",
-            "Ask concrete, technical, evaluable questions",
-            "Acknowledge the candidate's last answer organically in your follow-ups (e.g. 'That makes sense. Given that you used X, how did you handle Y?') to sound highly conversational.",
-            "Maintain a warm, enthusiastic, and human-like persona",
-            "Follow-ups must directly deepen the main question",
+            "CRITICAL: If the candidate's incredibly recent answer appears cut-off in the middle of a sentence, abruptly ended, or too short (as if their microphone paused or glitched), DO NOT ask a new technical question. Instead, warmly and naturally ask them if they want to finish their thought (e.g. 'Oh, it sounded like your mic cut out there, take your time if you wanted to add more to that.').",
+            "Act incredibly human. Acknowledge their answers using empathetic conversational fillers like 'Ah, I see', 'Makes perfect sense', or 'That is actually a really clever approach'.",
+            "Draw bold connections between their current answer and things they said MUCH earlier in the interview (cross-referencing full history) to make it feel cohesive.",
+            "Ask a concrete, technical, evaluable question that pushes deep into exactly what they just explained.",
         ],
-        "output_schema": {"followups": ["q1", "q2"]},
+        "output_schema": {"followup": "string"},
     }
 
     body = {
@@ -294,8 +291,8 @@ def _generate_ai_followups(
             },
             {"role": "user", "content": json.dumps(prompt)},
         ],
-        "temperature": 0.2,
-        "max_tokens": 180,
+        "temperature": 0.25,
+        "max_tokens": 150,
         "response_format": {"type": "json_object"},
     }
     try:
@@ -307,20 +304,12 @@ def _generate_ai_followups(
             )
             resp.raise_for_status()
             parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
-            followups = parsed.get("followups", [])
-            if isinstance(followups, list):
-                cleaned = [str(f).strip() for f in followups if str(f).strip()]
-                if len(cleaned) >= 2:
-                    return cleaned[:2], "api_success"
-            return [
-                "What was the hardest technical challenge in that context?",
-                "What would you improve if you rebuilt it today?",
-            ], "api_invalid_followups_shape"
+            q = str(parsed.get("followup") or "").strip()
+            if q:
+                return q, "api_success"
+            return "What would you improve if you rebuilt it today?", "api_invalid_followups_shape"
     except Exception as exc:
-        return [
-            "What was the hardest technical challenge in that context?",
-            "What would you improve if you rebuilt it today?",
-        ], f"api_error:{str(exc)[:120]}"
+        return "What would you improve if you rebuilt it today?", f"api_error:{str(exc)[:120]}"
 
 
 def _generate_ai_main_question(
@@ -352,13 +341,13 @@ def _generate_ai_main_question(
             "experience": parsed_sections.get("experience", []),
             "work_experience_years": parsed_sections.get("work_experience_years", ""),
         },
-        "history": cleaned_history[-10:],
+        "history": cleaned_history,
         "constraints": [
             "Return strict JSON only",
             "Question should sound warm, natural, and highly conversational (e.g. 'I see you worked on X, could you tell me more about...')",
-            "Maintain a friendly, human-like persona rather than acting like a robotic examiner",
+            "CRITICAL: If the candidate's very last answer seems cut-off, prematurely stopped, or unnaturally short (as if their microphone dropped), DO NOT blindly plow forward with the new main topic. Instead, politely check in and let them finish (e.g., 'Before we move on, it sounded like your mic cut out... did you want to finish your thought?').",
             "Keep one question only (no multi-question chaining)",
-            "No repetition with history",
+            "Tie the new topic back to something they said earlier in the interview to make the transition incredibly natural.",
             "Technically evaluable and role-relevant",
         ],
         "output_schema": {"question": "string"},
@@ -453,7 +442,7 @@ def generate_interview_question(
         return ai_main_q, f"source=main state=main_{next_main_idx + 1}_start {main_meta}"
 
     current_main_question = main_questions[current_main_idx]
-    followups, followup_meta = _generate_ai_followups(
+    followup_q, followup_meta = _generate_ai_followups(
         settings=settings,
         main_question=current_main_question,
         role_title=role_title,
@@ -464,9 +453,8 @@ def generate_interview_question(
         cleaned_history=cleaned_history,
     )
     if followups_done < 2:
-        next_fup = followups[followups_done]
-        if not _is_repetitive(next_fup, asked_questions):
-            return next_fup, (
+        if not _is_repetitive(followup_q, asked_questions):
+            return followup_q, (
                 f"source=ai_followup state=main_{current_main_idx + 1} "
                 f"followup={followups_done + 1}/2 {followup_meta}"
             )

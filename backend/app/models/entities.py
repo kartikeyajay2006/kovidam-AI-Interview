@@ -17,6 +17,7 @@ class Job(Base):
     difficulty: Mapped[str] = mapped_column(String(32), default="medium")
     interview_type: Mapped[str] = mapped_column(String(32), default="mixed")
     duration_minutes: Mapped[int] = mapped_column(Integer, default=45)
+    question_bank: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

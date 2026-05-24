@@ -140,6 +140,25 @@ def _default_human_question_bank() -> list[dict]:
         )
     return bank
 
+def _parse_job_questions(question_bank: str | None) -> list[dict]:
+    if not question_bank or not question_bank.strip():
+        return []
+    lines = [q.strip() for q in question_bank.splitlines() if q.strip()]
+    if not lines:
+        return []
+    bank = []
+    for idx, line in enumerate(lines, start=1):
+        bank.append(
+            {
+                "id": f"CQ{idx:02d}",
+                "question": line,
+                "difficulty": "medium",
+                "competency_bucket": "technical_depth",
+                "type": "main",
+            }
+        )
+    return bank
+
 
 def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple[bool, str]:
     target_email = candidate.email.strip()
@@ -420,7 +439,7 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         resume_text=resume_text,
         resume_skills=resume_skills,
         parsed_resume_json=effective_resume_json,
-        human_question_bank=payload.human_question_bank or _default_human_question_bank(),
+        human_question_bank=payload.human_question_bank or _parse_job_questions(job.question_bank) or _default_human_question_bank(),
         history=merged_history,
     )
     if question == INTERVIEW_COMPLETE_SENTINEL:

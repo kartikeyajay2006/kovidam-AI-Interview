@@ -9,6 +9,7 @@ class JobCreate(BaseModel):
     difficulty: str = "medium"
     interview_type: str = "mixed"
     duration_minutes: int = 45
+    question_bank: str = ""
 
 
 class JobOut(BaseModel):
@@ -20,6 +21,7 @@ class JobOut(BaseModel):
     difficulty: str
     interview_type: str
     duration_minutes: int
+    question_bank: str
 
 
 class CandidateCreate(BaseModel):

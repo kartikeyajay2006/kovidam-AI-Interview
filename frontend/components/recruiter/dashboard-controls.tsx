@@ -18,6 +18,7 @@ async function fetchWithFallback(path: string, init?: RequestInit): Promise<Resp
 export default function DashboardControls({ jobs }: { jobs: Job[] }) {
   const [jobTitle, setJobTitle] = useState("");
   const [jobDesc, setJobDesc] = useState("");
+  const [questionBank, setQuestionBank] = useState("");
   const [jobKind, setJobKind] = useState<"job" | "internship">("job");
   const [parsedResumeJson, setParsedResumeJson] = useState("");
   const [selectedJobId, setSelectedJobId] = useState(jobs[0]?.id || "");
@@ -38,6 +39,7 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
           difficulty: "medium",
           interview_type: jobKind,
           duration_minutes: 45,
+          question_bank: questionBank,
         }),
       });
       if (!res.ok) {
@@ -123,7 +125,8 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
         <form onSubmit={createJob} className="card-hover space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md hover:border-teal-200">
           <p className="font-bold text-slate-800">1. Create Job</p>
           <input className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" placeholder="Job title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} required />
-          <textarea className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition" placeholder="Description" value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} required />
+          <textarea className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition placeholder-slate-400" placeholder="Enter hyper-detailed technical requirements and stack (e.g. 'Senior Distributed Systems Engineer. Design high-throughput microservices using FastAPI, Redis...')" rows={4} value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} required />
+          <textarea className="w-full rounded-md border border-slate-300 bg-slate-50 p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500 transition placeholder-slate-400" placeholder="Custom Question Bank (Optional). One question per line." rows={3} value={questionBank} onChange={(e) => setQuestionBank(e.target.value)} />
           <div className="flex items-center gap-2">
             <button
               type="button"
