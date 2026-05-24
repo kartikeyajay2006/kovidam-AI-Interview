@@ -441,6 +441,7 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         parsed_resume_json=effective_resume_json,
         human_question_bank=payload.human_question_bank or _parse_job_questions(job.question_bank) or _default_human_question_bank(),
         history=merged_history,
+        candidate_name=candidate.name,
     )
     if question == INTERVIEW_COMPLETE_SENTINEL:
         interview.status = "completed"

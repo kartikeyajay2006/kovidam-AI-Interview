@@ -1,5 +1,4 @@
 import json
-import random
 import re
 from typing import Iterable
 
@@ -47,12 +46,6 @@ def _sanitize_resume_text(resume_text: str) -> str:
     return "\n".join(safe_lines)
 
 
-def _extract_resume_highlights(resume_text: str) -> list[str]:
-    lines = [line.strip(" -\t") for line in (resume_text or "").splitlines()]
-    cleaned = [line for line in lines if 20 <= len(line) <= 180]
-    return cleaned[:6]
-
-
 def _trim_history(history: Iterable[dict]) -> list[dict]:
     trimmed = []
     for turn in history:
@@ -67,19 +60,26 @@ def _normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
-def _build_default_human_bank() -> list[dict]:
-    items: list[dict] = []
-    for idx, entry in enumerate(QUESTION_BANK, start=1):
-        items.append(
-            {
-                "id": f"Q{idx:02d}",
-                "question": entry["main"],
-                "type": "main",
-                "difficulty": "medium",
-                "competency_bucket": "technical_depth",
-            }
-        )
-    return items
+def _is_repeat_request(text: str) -> bool:
+    t = _normalize(text)
+    if not t:
+        return False
+    repeat_patterns = (
+        "repeat",
+        "say that again",
+        "come again",
+        "didn't catch",
+        "did not catch",
+        "can you rephrase",
+        "could you rephrase",
+        "rephrase the question",
+        "can you ask again",
+        "could you ask again",
+        "what was the question",
+        "pardon",
+        "sorry can you repeat",
+    )
+    return any(p in t for p in repeat_patterns)
 
 
 def _extract_parsed_sections(parsed_resume_json: dict) -> dict:
@@ -123,211 +123,83 @@ def _extract_parsed_sections(parsed_resume_json: dict) -> dict:
     }
 
 
-def _infer_bucket(text: str) -> str:
-    t = _normalize(text)
-    if any(k in t for k in ("design", "architecture", "scale", "throughput", "latency")):
-        return "system_design"
-    if any(k in t for k in ("debug", "failed", "failure", "incident", "bug")):
-        return "debugging"
-    if any(k in t for k in ("trade-off", "complexity", "data structure", "algorithm")):
-        return "problem_solving"
-    if any(k in t for k in ("team", "conflict", "ownership", "collaborat")):
-        return "ownership_communication"
-    return "technical_depth"
-
-
 def _build_coverage_state(cleaned_history: list[dict]) -> dict:
     covered: dict[str, int] = {}
-    for turn in cleaned_history:
-        if turn.get("role") != "assistant":
-            continue
-        bucket = _infer_bucket(turn.get("content", ""))
-        covered[bucket] = covered.get(bucket, 0) + 1
     priority = ["technical_depth", "problem_solving", "debugging", "system_design", "ownership_communication"]
-    uncovered = [b for b in priority if b not in covered]
-    return {"covered_counts": covered, "uncovered_priority": uncovered}
-
-
-def _is_repetitive(candidate_question: str, asked_questions: list[str]) -> bool:
-    q_norm = _normalize(candidate_question)
-    if not q_norm:
-        return True
-    q_tokens = set(q_norm.split())
-    for asked in asked_questions:
-        a_norm = _normalize(asked)
-        if not a_norm:
-            continue
-        if q_norm == a_norm:
-            return True
-        a_tokens = set(a_norm.split())
-        overlap = len(q_tokens & a_tokens)
-        denom = max(1, min(len(q_tokens), len(a_tokens)))
-        if overlap / denom >= 0.8:
-            return True
-    return False
-
-
-def _fallback_question(role_title: str, resume_skills: str, resume_text: str, history: list[dict]) -> tuple[str, str]:
-    skills = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
-    highlights = _extract_resume_highlights(_sanitize_resume_text(resume_text))
-
-    if not history:
-        if highlights:
-            return (
-                f"Your resume mentions: '{highlights[0]}'. Can you walk me through your exact contribution and impact?",
-                "Fallback resume-grounded opening question.",
-            )
-        if skills:
-            return (
-                f"Pick one project where you used {skills[0]} and explain architecture, scale, and one production issue.",
-                "Fallback skill-grounded opening question.",
-            )
-        return (
-            f"For the {role_title} role, describe your strongest project and the toughest technical challenge you solved.",
-            "Fallback general opening question.",
-        )
-
-    return (
-        "In your previous answer, what trade-off did you choose, and what alternative did you reject?",
-        "Fallback adaptive follow-up.",
-    )
-
-
-def _select_current_main(asked_assistant_questions: list[str], bank: list[dict]) -> tuple[int, str]:
-    main_questions = [b["question"] for b in bank if b.get("type") == "main" and b.get("question")]
-    if not main_questions:
-        return 0, "Tell me about a project you built recently."
-    asked = [_normalize(a) for a in asked_assistant_questions]
-    for idx, q in enumerate(main_questions):
-        if _normalize(q) not in asked:
-            return idx, q
-    return len(main_questions) - 1, main_questions[-1]
-
-
-def _count_followups_after_main(cleaned_history: list[dict], main_question: str) -> int:
-    norm_main = _normalize(main_question)
-    assistant_turns = [t for t in cleaned_history if t.get("role") == "assistant"]
-    pos = -1
-    for i, t in enumerate(assistant_turns):
-        if _normalize(t.get("content", "")) == norm_main:
-            pos = i
-    if pos == -1:
-        return 0
-    return max(0, len(assistant_turns) - pos - 1)
+    return {"covered_counts": covered, "uncovered_priority": priority}
 
 
 def _determine_main_state(cleaned_history: list[dict], main_questions: list[str]) -> tuple[int, int]:
-    """
-    Returns (current_main_idx, followups_done_for_current_main).
-    Each topic consists of exactly 3 questions (1 main + 2 followups).
-    """
     assistant_turns = [t for t in cleaned_history if t.get("role") == "assistant"]
     total = len(assistant_turns)
-    
     if not assistant_turns or not main_questions:
         return 0, 0
-
     current_main_idx = total // 3
     followups_done = total % 3
-
     if current_main_idx >= len(main_questions):
-        # Prevent index out of bounds if conversation goes too long
         current_main_idx = len(main_questions) - 1
         followups_done = 2
-        
     return current_main_idx, followups_done
 
 
-def _generate_ai_followups(
-    *,
-    settings,
-    main_question: str,
-    role_title: str,
-    job_description: str,
-    interview_type: str,
-    difficulty: str,
-    parsed_sections: dict,
-    cleaned_history: list[dict],
-) -> tuple[str, str]:
-    if not settings.openai_api_key:
-        return "What would you improve if you rebuilt it today?", "api_skipped:no_openai_key"
-
-    prompt = {
-        "task": "Generate EXACTLY ONE technical follow-up interview question based deeply on the candidate's last answer.",
-        "main_question": main_question,
-        "job_context": {
-            "role_title": role_title,
-            "job_description": (job_description or "")[:3000],
-            "interview_type": interview_type,
-            "difficulty": difficulty,
-        },
-        "candidate_context": {
-            "skills": parsed_sections.get("skills", []),
-            "projects": parsed_sections.get("projects", []),
-            "experience": parsed_sections.get("experience", []),
-            "work_experience_years": parsed_sections.get("work_experience_years", ""),
-        },
-        "full_interview_history": cleaned_history,
-        "constraints": [
-            "Return strict JSON only",
-            "Do not repeat earlier asked questions",
-            "CRITICAL: If the candidate's incredibly recent answer appears cut-off in the middle of a sentence, abruptly ended, or too short (as if their microphone paused or glitched), DO NOT ask a new technical question. Instead, warmly and naturally ask them if they want to finish their thought (e.g. 'Oh, it sounded like your mic cut out there, take your time if you wanted to add more to that.').",
-            "Act incredibly human. Acknowledge their answers using empathetic conversational fillers like 'Ah, I see', 'Makes perfect sense', or 'That is actually a really clever approach'.",
-            "Draw bold connections between their current answer and things they said MUCH earlier in the interview (cross-referencing full history) to make it feel cohesive.",
-            "Ask a concrete, technical, evaluable question that pushes deep into exactly what they just explained.",
-        ],
-        "output_schema": {"followup": "string"},
-    }
-
+def _chat_json(settings, prompt: dict, schema_key: str, temperature: float, max_tokens: int, system_msg: str) -> str:
     body = {
         "model": settings.openai_model,
         "messages": [
-            {
-                "role": "system", 
-                "content": (
-                    "You are a warm, conversational senior technical interviewer. "
-                    "Speak naturally like a real human. Return strict JSON only."
-                )
-            },
+            {"role": "system", "content": system_msg},
             {"role": "user", "content": json.dumps(prompt)},
         ],
-        "temperature": 0.25,
-        "max_tokens": 150,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    try:
-        with httpx.Client(timeout=20) as client:
-            resp = client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=body,
-            )
-            resp.raise_for_status()
-            parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
-            q = str(parsed.get("followup") or "").strip()
-            if q:
-                return q, "api_success"
-            return "What would you improve if you rebuilt it today?", "api_invalid_followups_shape"
-    except Exception as exc:
-        return "What would you improve if you rebuilt it today?", f"api_error:{str(exc)[:120]}"
+    with httpx.Client(timeout=20) as client:
+        resp = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
+            json=body,
+        )
+        resp.raise_for_status()
+        parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
+        value = str(parsed.get(schema_key) or "").strip()
+        if not value:
+            raise ValueError(f"{schema_key} was empty in model response")
+        return value
 
 
-def _generate_ai_main_question(
-    *,
-    settings,
-    main_topic: str,
-    role_title: str,
-    job_description: str,
-    interview_type: str,
-    difficulty: str,
-    parsed_sections: dict,
-    cleaned_history: list[dict],
-) -> tuple[str, str]:
-    if not settings.openai_api_key:
-        return main_topic, "api_skipped:no_openai_key"
-
+def _generate_ai_intro_question(*, settings, candidate_name: str, role_title: str, job_description: str, interview_type: str, difficulty: str) -> tuple[str, str]:
     prompt = {
-        "task": "Generate one human-like technical interview question.",
+        "task": "Generate the very first interview question.",
+        "context": {
+            "candidate_name": candidate_name,
+            "role_title": role_title,
+            "job_description": (job_description or "")[:2000],
+            "interview_type": interview_type,
+            "difficulty": difficulty,
+        },
+        "constraints": [
+            "Return strict JSON only",
+            "Start with 'Hey {name}' if a candidate name is provided",
+            "Ask them to introduce themselves naturally",
+            "Keep it conversational and human",
+            "Single question only",
+        ],
+        "output_schema": {"question": "string"},
+    }
+    q = _chat_json(
+        settings,
+        prompt,
+        "question",
+        0.4,
+        120,
+        "You are a warm, human senior technical interviewer. Return strict JSON only.",
+    )
+    return q, "api_success"
+
+
+def _generate_ai_main_question(*, settings, main_topic: str, role_title: str, job_description: str, interview_type: str, difficulty: str, parsed_sections: dict, cleaned_history: list[dict]) -> tuple[str, str]:
+    prompt = {
+        "task": "Generate one technical interview question.",
         "target_main_topic": main_topic,
         "job_context": {
             "role_title": role_title,
@@ -335,55 +207,85 @@ def _generate_ai_main_question(
             "interview_type": interview_type,
             "difficulty": difficulty,
         },
-        "candidate_context": {
-            "skills": parsed_sections.get("skills", []),
-            "projects": parsed_sections.get("projects", []),
-            "experience": parsed_sections.get("experience", []),
-            "work_experience_years": parsed_sections.get("work_experience_years", ""),
-        },
+        "candidate_context": parsed_sections,
         "history": cleaned_history,
         "constraints": [
             "Return strict JSON only",
-            "Question should sound warm, natural, and highly conversational (e.g. 'I see you worked on X, could you tell me more about...')",
-            "CRITICAL: If the candidate's very last answer seems cut-off, prematurely stopped, or unnaturally short (as if their microphone dropped), DO NOT blindly plow forward with the new main topic. Instead, politely check in and let them finish (e.g., 'Before we move on, it sounded like your mic cut out... did you want to finish your thought?').",
+            "One single question sentence ending with a question mark",
             "Keep one question only (no multi-question chaining)",
-            "Tie the new topic back to something they said earlier in the interview to make the transition incredibly natural.",
             "Technically evaluable and role-relevant",
+            "Sound like a real interviewer with a natural transition from previous context",
         ],
         "output_schema": {"question": "string"},
     }
-    body = {
-        "model": settings.openai_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a warm, conversational senior technical interviewer. "
-                    "Speak naturally like a real human interviewer while staying concise and technical. "
-                    "Return strict JSON only."
-                ),
-            },
-            {"role": "user", "content": json.dumps(prompt)},
+    q = _chat_json(
+        settings,
+        prompt,
+        "question",
+        0.35,
+        150,
+        "You are a senior technical interviewer. Ask concise, deep, role-relevant, evaluable questions. Return strict JSON only.",
+    )
+    return q, "api_success"
+
+
+def _generate_ai_followups(*, settings, main_question: str, role_title: str, job_description: str, interview_type: str, difficulty: str, parsed_sections: dict, cleaned_history: list[dict]) -> tuple[str, str]:
+    coverage_state = _build_coverage_state(cleaned_history)
+    target_bucket = coverage_state["uncovered_priority"][0]
+    prompt = {
+        "task": "Generate exactly one technical follow-up question based on the candidate's most recent answer.",
+        "main_question": main_question,
+        "job_context": {
+            "role_title": role_title,
+            "job_description": (job_description or "")[:3000],
+            "interview_type": interview_type,
+            "difficulty": difficulty,
+        },
+        "candidate_context": parsed_sections,
+        "full_interview_history": cleaned_history,
+        "target_coverage_bucket": target_bucket,
+        "constraints": [
+            "Return strict JSON only",
+            "One single question sentence ending with a question mark",
+            "Do not repeat earlier asked questions",
+            "Be specific and technically evaluable",
+            "Sound like a real interviewer: brief acknowledgement + one sharp follow-up",
         ],
-        "temperature": 0.35,
-        "max_tokens": 150,
-        "response_format": {"type": "json_object"},
+        "output_schema": {"followup": "string"},
     }
-    try:
-        with httpx.Client(timeout=20) as client:
-            resp = client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=body,
-            )
-            resp.raise_for_status()
-            parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
-            q = str(parsed.get("question") or "").strip()
-            if q:
-                return q, "api_success"
-            return main_topic, "api_invalid_main_shape"
-    except Exception as exc:
-        return main_topic, f"api_error:{str(exc)[:120]}"
+    q = _chat_json(
+        settings,
+        prompt,
+        "followup",
+        0.25,
+        150,
+        "You are a senior technical interviewer. Ask concise, deep, role-relevant, evaluable questions. Return strict JSON only.",
+    )
+    return q, "api_success"
+
+
+def _generate_ai_repeat_response(*, settings, last_question: str, candidate_request: str) -> tuple[str, str]:
+    prompt = {
+        "task": "Candidate asked to repeat or rephrase. Return one natural assistant response.",
+        "last_question": last_question,
+        "candidate_request": candidate_request,
+        "constraints": [
+            "Return strict JSON only",
+            "Acknowledge briefly and repeat/rephrase the same question",
+            "Do not introduce a new topic",
+            "Single concise response",
+        ],
+        "output_schema": {"response": "string"},
+    }
+    msg = _chat_json(
+        settings,
+        prompt,
+        "response",
+        0.3,
+        140,
+        "You are a human interviewer. Return strict JSON only.",
+    )
+    return msg, "api_success"
 
 
 def generate_interview_question(
@@ -397,34 +299,52 @@ def generate_interview_question(
     parsed_resume_json: dict,
     human_question_bank: list[dict],
     history: list[dict],
+    candidate_name: str = "",
 ) -> tuple[str, str]:
     cleaned_history = _trim_history(history)
     settings = get_settings()
 
-    bank = human_question_bank if human_question_bank else _build_default_human_bank()
-    parsed_sections = _extract_parsed_sections(parsed_resume_json)
-    safe_resume_text = _sanitize_resume_text(resume_text)[:4000]
-    main_questions = [b["question"] for b in bank if b.get("type") == "main" and b.get("question")]
+    main_questions = [b["question"] for b in human_question_bank if b.get("type") == "main" and b.get("question")]
     if not main_questions:
         main_questions = [q["main"] for q in QUESTION_BANK]
+
+    last_candidate_turn = None
+    for turn in reversed(cleaned_history):
+        if turn.get("role") == "candidate":
+            last_candidate_turn = str(turn.get("content", "")).strip()
+            break
+
+    if last_candidate_turn and _is_repeat_request(last_candidate_turn):
+        last_assistant_question = ""
+        for turn in reversed(cleaned_history):
+            if turn.get("role") == "assistant":
+                last_assistant_question = str(turn.get("content", "")).strip()
+                break
+        if last_assistant_question:
+            ai_repeat, repeat_meta = _generate_ai_repeat_response(
+                settings=settings,
+                last_question=last_assistant_question,
+                candidate_request=last_candidate_turn,
+            )
+            return ai_repeat, f"source=repeat_guard state=hold {repeat_meta}"
+
     asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
     current_main_idx, followups_done = _determine_main_state(cleaned_history, main_questions)
+    parsed_sections = _extract_parsed_sections(parsed_resume_json)
+    _ = _sanitize_resume_text(resume_text)
+    _ = resume_skills
 
-    # No main asked yet -> ask first (AI wording over configured main topic).
     if not asked_questions:
-        ai_main_q, main_meta = _generate_ai_main_question(
+        intro_q, intro_meta = _generate_ai_intro_question(
             settings=settings,
-            main_topic=main_questions[0],
+            candidate_name=candidate_name,
             role_title=role_title,
             job_description=job_description,
             interview_type=interview_type,
             difficulty=difficulty,
-            parsed_sections=parsed_sections,
-            cleaned_history=cleaned_history,
         )
-        return ai_main_q, f"source=main state=main_1_start {main_meta}"
+        return intro_q, f"source=intro state=interview_start {intro_meta}"
 
-    # If last main is complete (2 followups done), move to next main.
     if followups_done >= 2:
         next_main_idx = current_main_idx + 1
         if next_main_idx >= len(main_questions):
@@ -452,24 +372,10 @@ def generate_interview_question(
         parsed_sections=parsed_sections,
         cleaned_history=cleaned_history,
     )
-    if followups_done < 2:
-        if not _is_repetitive(followup_q, asked_questions):
-            return followup_q, (
-                f"source=ai_followup state=main_{current_main_idx + 1} "
-                f"followup={followups_done + 1}/2 {followup_meta}"
-            )
-        # If generated follow-up repeats, use a deterministic safe fallback follow-up.
-        safe_followup = (
-            "What was the hardest technical challenge in that context?"
-            if followups_done == 0
-            else "What would you improve if you rebuilt it today?"
-        )
-        return safe_followup, (
-            f"source=fallback_followup state=main_{current_main_idx + 1} "
-            f"followup={followups_done + 1}/2 reason=repetitive"
-        )
-
-    return _fallback_question(role_title, resume_skills, safe_resume_text, cleaned_history)
+    return followup_q, (
+        f"source=ai_followup state=main_{current_main_idx + 1} "
+        f"followup={followups_done + 1}/2 {followup_meta}"
+    )
 
 
 def analyze_candidate_answer(
