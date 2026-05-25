@@ -121,30 +121,246 @@ def _extract_keywords(text: str, limit: int = 3) -> list[str]:
     return ordered
 
 
-def _fallback_intro_question(candidate_name: str, role_title: str) -> str:
+def _last_turn_by_role(cleaned_history: list[dict], role: str) -> str:
+    for turn in reversed(cleaned_history):
+        if turn.get("role") == role:
+            return str(turn.get("content") or "").strip()
+    return ""
+
+
+def _answer_signal(text: str) -> dict:
+    cleaned = (text or "").strip()
+    words = re.findall(r"\b\w+\b", cleaned)
+    lowered = cleaned.lower()
+    has_metric = bool(re.search(r"\b\d+(\.\d+)?%?\b", cleaned))
+    action_verbs = ("implemented", "designed", "debugged", "optimized", "migrated", "built", "deployed", "measured")
+    has_action = any(v in lowered for v in action_verbs)
+    return {
+        "word_count": len(words),
+        "has_metric": has_metric,
+        "has_action_verbs": has_action,
+        "is_very_short": len(words) < 12,
+        "is_vague": len(words) < 20 or not has_action,
+    }
+
+
+def _infer_interview_stage(cleaned_history: list[dict]) -> str:
+    candidate_turns = [t for t in cleaned_history if t.get("role") == "candidate"]
+    answered = len(candidate_turns)
+    if answered <= 1:
+        return "intro"
+    if answered <= 3:
+        return "project_deep_dive"
+    if answered <= 6:
+        return "technical_depth"
+    if answered <= 8:
+        return "system_design_tradeoffs"
+    return "ownership_behavioral"
+
+
+def _plan_competency_ladder() -> list[str]:
+    return [
+        "role_fit_intro",
+        "hands_on_implementation",
+        "debugging_root_cause",
+        "performance_tradeoffs",
+        "system_design_scale",
+        "ownership_communication",
+    ]
+
+
+def _determine_target_competency(cleaned_history: list[dict]) -> str:
+    candidate_answers = [str(t.get("content") or "").lower() for t in cleaned_history if t.get("role") == "candidate"]
+    if not candidate_answers:
+        return "role_fit_intro"
+    text = " ".join(candidate_answers[-8:])
+    signals = {
+        "role_fit_intro": ("introduce", "background", "experience"),
+        "hands_on_implementation": ("implemented", "built", "designed", "developed"),
+        "debugging_root_cause": ("debug", "issue", "incident", "root cause", "logs"),
+        "performance_tradeoffs": ("latency", "throughput", "cache", "optimize", "trade-off", "tradeoff"),
+        "system_design_scale": ("scale", "architecture", "distributed", "queue", "partition"),
+        "ownership_communication": ("stakeholder", "team", "ownership", "conflict", "decision"),
+    }
+    covered = set()
+    for key, words in signals.items():
+        if any(w in text for w in words):
+            covered.add(key)
+    for step in _plan_competency_ladder():
+        if step not in covered:
+            return step
+    return "ownership_communication"
+
+
+def _tokenize_meaningful(text: str) -> set[str]:
+    raw = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{2,}", (text or "").lower())
+    stop = {
+        "the", "and", "for", "that", "with", "this", "from", "your", "about", "into", "have", "what",
+        "when", "where", "which", "could", "would", "should", "explain", "describe", "tell", "project",
+        "experience", "role", "past", "briefly", "including", "exact", "steps", "result",
+    }
+    return {t for t in raw if t not in stop and len(t) >= 3}
+
+
+def _is_off_topic_answer(last_question: str, last_answer: str) -> bool:
+    q_tokens = _tokenize_meaningful(last_question)
+    a_tokens = _tokenize_meaningful(last_answer)
+    if not q_tokens or not a_tokens:
+        return False
+    overlap = len(q_tokens.intersection(a_tokens))
+    ratio = overlap / max(1, min(len(q_tokens), 8))
+    return ratio < 0.12 and len(a_tokens) >= 12
+
+
+def _tokenize_for_similarity(text: str) -> set[str]:
+    return {
+        t
+        for t in re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{2,}", (text or "").lower())
+        if t not in {"the", "and", "for", "that", "with", "this", "from", "your", "about", "what", "when"}
+    }
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    ta = _tokenize_for_similarity(a)
+    tb = _tokenize_for_similarity(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta.intersection(tb))
+    union = len(ta.union(tb))
+    return inter / max(1, union)
+
+
+def _known_numeric_tokens(cleaned_history: list[dict], parsed_sections: dict) -> set[str]:
+    pool = " ".join([str(t.get("content") or "") for t in cleaned_history[-30:]])
+    if isinstance(parsed_sections, dict):
+        projects = parsed_sections.get("projects")
+        if isinstance(projects, list):
+            for p in projects[:8]:
+                if isinstance(p, dict):
+                    pool += " " + str(p.get("description") or "")
+                    highs = p.get("highlights")
+                    if isinstance(highs, list):
+                        pool += " " + " ".join([str(h) for h in highs[:6]])
+    return set(re.findall(r"\b\d+(?:\.\d+)?%?\b", pool))
+
+
+def _question_has_unseen_numbers(question: str, known_numbers: set[str]) -> bool:
+    nums = set(re.findall(r"\b\d+(?:\.\d+)?%?\b", question or ""))
+    if not nums:
+        return False
+    return any(n not in known_numbers for n in nums)
+
+
+def _ensure_single_question_sentence(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip().replace("\n", " "))
+    cleaned = re.sub(r'^[\"\']+|[\"\']+$', "", cleaned).strip()
+    if not cleaned:
+        return ""
+    # Keep content up to first question mark if multiple are generated.
+    if cleaned.count("?") > 1:
+        first = cleaned.find("?")
+        cleaned = cleaned[: first + 1].strip()
+    if "?" not in cleaned:
+        cleaned = cleaned.rstrip(".! ") + "?"
+    # Remove list-like prefixes.
+    cleaned = re.sub(r"^(question\s*\d*[:\-]\s*)", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _postprocess_question(
+    question: str,
+    cleaned_history: list[dict],
+    parsed_sections: dict,
+    target_competency: str,
+    role_title: str,
+) -> str:
+    q = _ensure_single_question_sentence(question)
+    if not q:
+        return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
+
+    words = q.split()
+    if len(words) > 38:
+        # Keep it crisp and interviewer-like.
+        q = " ".join(words[:38]).rstrip(",;:") + "?"
+
+    assistant_questions = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"]
+    for prev in assistant_questions[-8:]:
+        if _jaccard_similarity(q, prev) >= 0.7:
+            return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
+
+    known_numbers = _known_numeric_tokens(cleaned_history, parsed_sections)
+    if _question_has_unseen_numbers(q, known_numbers):
+        return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
+
+    if q.lower().startswith("candidate "):
+        q = q[len("candidate ") :].strip()
+    return q
+
+
+def _fallback_intro_question(candidate_name: str, role_title: str, parsed_sections: dict) -> str:
     name = candidate_name.strip().split()[0] if candidate_name.strip() else "there"
     role = role_title.strip() or "this role"
+    projects = parsed_sections.get("projects") if isinstance(parsed_sections, dict) else []
+    if isinstance(projects, list):
+        for project in projects:
+            if isinstance(project, dict):
+                title = str(project.get("title") or "").strip()
+                if title:
+                    return (
+                        f"Hi {name}, could you briefly introduce yourself and then walk me through your {title} project, "
+                        f"including your exact responsibilities and impact relevant to {role}?"
+                    )
+    skills = parsed_sections.get("skills") if isinstance(parsed_sections, dict) else []
+    if isinstance(skills, list) and skills:
+        focus_skill = str(skills[0]).strip()
+        if focus_skill:
+            return (
+                f"Hi {name}, please give a brief introduction and then describe one project where you used {focus_skill}, "
+                f"including what you personally built and the outcome."
+            )
     return (
-        f"Hi {name}, could you walk me through one backend project you built that's most relevant to {role}, "
-        "and what your exact contribution was?"
+        f"Hi {name}, could you briefly introduce yourself and walk me through one project most relevant to {role}, "
+        "including your exact contribution and final result?"
     )
 
 
-def _fallback_next_question(cleaned_history: list[dict], role_title: str, parsed_sections: dict) -> str:
+def _fallback_next_question(cleaned_history: list[dict], role_title: str, parsed_sections: dict, target_competency: str) -> str:
     last_candidate = ""
     for turn in reversed(cleaned_history):
         if turn.get("role") == "candidate":
             last_candidate = str(turn.get("content") or "").strip()
             break
+    stage = _infer_interview_stage(cleaned_history)
     if last_candidate:
         kws = _extract_keywords(last_candidate, limit=2)
         if kws:
+            if target_competency == "debugging_root_cause":
+                return (
+                    f"Thanks. On {kws[0]}, what was the first concrete signal that pointed to the root cause, "
+                    "and how did you verify the fix?"
+                )
+            if target_competency == "performance_tradeoffs":
+                return (
+                    f"You mentioned {kws[0]}. Which trade-offs did you choose, what did you measure before/after, "
+                    "and what did you consciously not optimize?"
+                )
+            if target_competency == "system_design_scale":
+                return (
+                    f"Good context. If traffic suddenly 10x on {kws[0]}, what would break first, "
+                    "and how would you redesign it step by step?"
+                )
+            if stage in {"intro", "project_deep_dive"}:
+                return (
+                    f"Thanks, that's helpful. On {kws[0]}"
+                    + (f" and {kws[1]}" if len(kws) > 1 else "")
+                    + ", what exactly did you build yourself, what was the toughest issue, and how did you resolve it?"
+                )
             return (
                 f"You mentioned {kws[0]}"
                 + (f" and {kws[1]}" if len(kws) > 1 else "")
                 + ". Can you explain the exact steps you took, one challenge you hit, and how you measured success?"
             )
-        return "Can you give one concrete example with your exact implementation steps, trade-offs, and final outcome?"
+        return "Could you give one concrete example with your exact implementation steps, trade-offs you made, and the final outcome?"
 
     skills = parsed_sections.get("skills") if isinstance(parsed_sections, dict) else []
     if isinstance(skills, list) and skills:
@@ -300,7 +516,16 @@ def _chat_json(settings, prompt: dict, schema_key: str, temperature: float, max_
         return value
 
 
-def _generate_ai_intro_question(*, settings, candidate_name: str, role_title: str, job_description: str, interview_type: str, difficulty: str) -> tuple[str, str]:
+def _generate_ai_intro_question(
+    *,
+    settings,
+    candidate_name: str,
+    role_title: str,
+    job_description: str,
+    interview_type: str,
+    difficulty: str,
+    parsed_sections: dict,
+) -> tuple[str, str]:
     prompt = {
         "task": "Generate the very first interview question.",
         "context": {
@@ -309,15 +534,25 @@ def _generate_ai_intro_question(*, settings, candidate_name: str, role_title: st
             "job_description": (job_description or "")[:2000],
             "interview_type": interview_type,
             "difficulty": difficulty,
+            "candidate_resume": {
+                "skills": (parsed_sections.get("skills") or [])[:8] if isinstance(parsed_sections, dict) else [],
+                "project_titles": [
+                    str(p.get("title") or "").strip()
+                    for p in ((parsed_sections.get("projects") or []) if isinstance(parsed_sections, dict) else [])
+                    if isinstance(p, dict) and str(p.get("title") or "").strip()
+                ][:5],
+            },
         },
         "constraints": [
             "Return strict JSON only",
             "Greet naturally if a candidate name is provided (do not force fixed phrasing)",
-            "Ask a natural opening interview question grounded in role or resume context",
+            "Ask for BOTH: a brief introduction and one past project/experience",
+            "Ground the question in role and resume context when available",
             "Keep it conversational and human, not robotic",
             "Use plain spoken English",
             "Single question only",
             "Avoid repeating the same opening wording across interviews",
+            "Do not invent projects, metrics, or technologies",
         ],
         "output_schema": {"question": "string"},
     }
@@ -418,7 +653,12 @@ def _generate_ai_next_question(
     difficulty: str,
     parsed_sections: dict,
     cleaned_history: list[dict],
+    target_competency: str,
 ) -> tuple[str, str]:
+    last_assistant = _last_turn_by_role(cleaned_history, "assistant")
+    last_candidate = _last_turn_by_role(cleaned_history, "candidate")
+    signal = _answer_signal(last_candidate)
+    stage = _infer_interview_stage(cleaned_history)
     prompt = {
         "task": "Generate the next interview question based on the full live conversation.",
         "job_context": {
@@ -429,15 +669,34 @@ def _generate_ai_next_question(
         },
         "candidate_context": parsed_sections,
         "conversation_history": cleaned_history[-24:],
+        "recent_exchange": {
+            "last_interviewer_question": last_assistant,
+            "last_candidate_answer": last_candidate,
+            "answer_signal": signal,
+        },
+        "interview_stage": stage,
+        "target_competency": target_competency,
+        "interviewer_rubric": [
+            "prioritize evidence over claims",
+            "probe ownership: what exactly candidate did",
+            "test reasoning under constraints and trade-offs",
+            "maintain conversational continuity and realism",
+        ],
         "constraints": [
             "Return strict JSON only",
-            "Ask exactly one question ending with '?'",
-            "Use natural spoken interviewer style",
+            "Ask exactly one interviewer-style prompt that ends with a single '?'",
+            "Use natural spoken interviewer style, not textbook style",
             "Must connect directly to candidate's latest answer",
             "Do not repeat previous questions",
             "Do not invent candidate achievements or metrics",
-            "If candidate answer is weak, ask for one concrete example",
-            "Keep concise and high-signal",
+            "If candidate answer is clear, include a short natural acknowledgement (max 8 words) before the question",
+            "If candidate answer is vague, ask a clarifying question first instead of jumping to a new topic",
+            "If candidate answer is weak/vague, ask for one concrete example with steps and outcome",
+            "If candidate answer is strong, ask a deeper follow-up on trade-offs, failure handling, scalability, or debugging",
+            "Bias the next question toward target_competency",
+            "Prefer specific implementation details over theory",
+            "Keep topic continuity: do not switch domains abruptly unless previous answer is fully complete",
+            "Keep concise and high-signal (max 35 words)",
         ],
         "output_schema": {"question": "string"},
     }
@@ -448,6 +707,42 @@ def _generate_ai_next_question(
         0.25,
         110,
         "You are an expert human interviewer. Ask one relevant, realistic next question only. Return strict JSON.",
+    )
+    return q, "api_success"
+
+
+def _generate_ai_precision_probe(
+    *,
+    settings,
+    role_title: str,
+    target_competency: str,
+    last_question: str,
+    last_candidate_answer: str,
+) -> tuple[str, str]:
+    prompt = {
+        "task": "Generate one interviewer follow-up when the candidate response is generic or low-signal.",
+        "context": {
+            "role_title": role_title,
+            "target_competency": target_competency,
+            "last_question": last_question,
+            "last_candidate_answer": last_candidate_answer,
+        },
+        "constraints": [
+            "Return strict JSON only",
+            "One concise follow-up ending with '?'",
+            "Ask for concrete actions, decisions, and measurable result",
+            "Do not switch topic; stay tightly connected to last question",
+            "Natural human interviewer tone",
+        ],
+        "output_schema": {"question": "string"},
+    }
+    q = _chat_json(
+        settings,
+        prompt,
+        "question",
+        0.2,
+        90,
+        "You are a senior interviewer. Ask sharp, concrete follow-ups. Return strict JSON only.",
     )
     return q, "api_success"
 
@@ -476,6 +771,34 @@ def _generate_ai_repeat_response(*, settings, last_question: str, candidate_requ
     return msg, "api_success"
 
 
+def _generate_ai_incomplete_probe(*, settings, last_question: str, last_candidate_turn: str, role_title: str) -> tuple[str, str]:
+    prompt = {
+        "task": "Candidate answer was incomplete. Ask one concise follow-up that helps them finish the same answer.",
+        "context": {
+            "role_title": role_title,
+            "last_question": last_question,
+            "candidate_partial_answer": last_candidate_turn,
+        },
+        "constraints": [
+            "Return strict JSON only",
+            "One short interviewer prompt ending with '?'",
+            "Stay on the same topic as the last question",
+            "Ask for concrete steps, ownership, and result",
+            "Human conversational tone",
+        ],
+        "output_schema": {"question": "string"},
+    }
+    q = _chat_json(
+        settings,
+        prompt,
+        "question",
+        0.25,
+        80,
+        "You are a senior interviewer. Keep continuity and ask one concise follow-up. Return strict JSON.",
+    )
+    return q, "api_success"
+
+
 def generate_interview_question(
     *,
     role_title: str,
@@ -494,6 +817,7 @@ def generate_interview_question(
     use_ai = bool((settings.openai_api_key or "").strip())
 
     parsed_sections = _extract_parsed_sections(parsed_resume_json)
+    target_competency = _determine_target_competency(cleaned_history)
     _ = [b["question"] for b in human_question_bank if b.get("type") == "main" and b.get("question")]
 
     last_candidate_turn = None
@@ -522,10 +846,79 @@ def generate_interview_question(
             return f"Sure, let me repeat that: {last_assistant_question}", "source=repeat_guard state=hold fallback=local"
 
     if last_candidate_turn and _is_incomplete_answer(last_candidate_turn):
+        last_assistant_question = _last_turn_by_role(cleaned_history, "assistant")
+        if use_ai:
+            try:
+                probe_q, probe_meta = _generate_ai_incomplete_probe(
+                    settings=settings,
+                    last_question=last_assistant_question,
+                    last_candidate_turn=last_candidate_turn,
+                    role_title=role_title,
+                )
+                return probe_q, f"source=incomplete_answer_guard state=hold {probe_meta}"
+            except Exception:
+                pass
+        kws = _extract_keywords(last_candidate_turn, limit=2)
+        if kws:
+            return (
+                f"Thanks. Could you go deeper on {kws[0]}"
+                + (f" and {kws[1]}" if len(kws) > 1 else "")
+                + " with your exact steps, your ownership, and the final outcome?",
+                "source=incomplete_answer_guard state=hold fallback=local",
+            )
         return (
             "Thanks. Could you expand on that with one concrete example, your exact steps, and the result?",
-            "source=incomplete_answer_guard state=hold",
+            "source=incomplete_answer_guard state=hold fallback=local",
         )
+
+    last_assistant_question = _last_turn_by_role(cleaned_history, "assistant")
+    if last_candidate_turn and last_assistant_question and _is_off_topic_answer(last_assistant_question, last_candidate_turn):
+        kws = _extract_keywords(last_assistant_question, limit=2)
+        if use_ai:
+            try:
+                probe_q, probe_meta = _generate_ai_incomplete_probe(
+                    settings=settings,
+                    last_question=last_assistant_question,
+                    last_candidate_turn=last_candidate_turn,
+                    role_title=role_title,
+                )
+                return probe_q, f"source=off_topic_guard state=hold {probe_meta}"
+            except Exception:
+                pass
+        if kws:
+            return (
+                f"Let's refocus briefly on {kws[0]}"
+                + (f" and {kws[1]}" if len(kws) > 1 else "")
+                + ". What exactly did you do, and what was the measurable outcome?",
+                "source=off_topic_guard state=hold fallback=local",
+            )
+        return (
+            "Let's stay on this question for a moment. Could you answer it directly with your exact steps and result?",
+            "source=off_topic_guard state=hold fallback=local",
+        )
+
+    if last_candidate_turn:
+        signal = _answer_signal(last_candidate_turn)
+        if signal["is_vague"] and signal["word_count"] < 28 and last_assistant_question:
+            if use_ai:
+                try:
+                    precision_q, precision_meta = _generate_ai_precision_probe(
+                        settings=settings,
+                        role_title=role_title,
+                        target_competency=target_competency,
+                        last_question=last_assistant_question,
+                        last_candidate_answer=last_candidate_turn,
+                    )
+                    refined_precision = _postprocess_question(
+                        precision_q,
+                        cleaned_history,
+                        parsed_sections,
+                        target_competency,
+                        role_title,
+                    )
+                    return refined_precision, f"source=precision_probe state=hold {precision_meta}"
+                except Exception:
+                    pass
 
     asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
     _ = _sanitize_resume_text(resume_text)
@@ -541,11 +934,27 @@ def generate_interview_question(
                     job_description=job_description,
                     interview_type=interview_type,
                     difficulty=difficulty,
+                    parsed_sections=parsed_sections,
                 )
-                return intro_q, f"source=intro state=interview_start {intro_meta}"
+                refined_intro = _postprocess_question(
+                    intro_q,
+                    cleaned_history,
+                    parsed_sections,
+                    target_competency,
+                    role_title,
+                )
+                return refined_intro, f"source=intro state=interview_start {intro_meta}"
             except Exception:
                 pass
-        return _fallback_intro_question(candidate_name, role_title), "source=intro state=interview_start fallback=local"
+        fallback_intro = _fallback_intro_question(candidate_name, role_title, parsed_sections)
+        refined_intro = _postprocess_question(
+            fallback_intro,
+            cleaned_history,
+            parsed_sections,
+            target_competency,
+            role_title,
+        )
+        return refined_intro, "source=intro state=interview_start fallback=local"
 
     if use_ai:
         try:
@@ -557,12 +966,28 @@ def generate_interview_question(
                 difficulty=difficulty,
                 parsed_sections=parsed_sections,
                 cleaned_history=cleaned_history,
+                target_competency=target_competency,
             )
-            return next_q, f"source=ai_dynamic_next state=live_flow {next_meta}"
+            refined_next = _postprocess_question(
+                next_q,
+                cleaned_history,
+                parsed_sections,
+                target_competency,
+                role_title,
+            )
+            return refined_next, f"source=ai_dynamic_next state=live_flow {next_meta}"
         except Exception:
             pass
 
-    return _fallback_next_question(cleaned_history, role_title, parsed_sections), "source=ai_dynamic_next state=live_flow fallback=local"
+    fallback_next = _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
+    refined_next = _postprocess_question(
+        fallback_next,
+        cleaned_history,
+        parsed_sections,
+        target_competency,
+        role_title,
+    )
+    return refined_next, "source=ai_dynamic_next state=live_flow fallback=local"
 
 
 def analyze_candidate_answer(

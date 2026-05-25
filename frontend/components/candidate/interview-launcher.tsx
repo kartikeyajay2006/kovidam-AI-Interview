@@ -109,6 +109,11 @@ export default function InterviewLauncher({
   const [faceViolationCountdown, setFaceViolationCountdown] = useState<number | null>(null);
   const [screenChanged, setScreenChanged] = useState(false);
   const [screenViolationCountdown, setScreenViolationCountdown] = useState<number | null>(null);
+  const [lipSyncSuspicious, setLipSyncSuspicious] = useState(false);
+  const [lipSyncViolationCountdown, setLipSyncViolationCountdown] = useState<number | null>(null);
+  const [mouthMotionLevel, setMouthMotionLevel] = useState(0);
+  const [cameraFreezeSuspicious, setCameraFreezeSuspicious] = useState(false);
+  const [cameraFreezeCountdown, setCameraFreezeCountdown] = useState<number | null>(null);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [answerDraft, setAnswerDraft] = useState("");
   const [cameraSnapshots, setCameraSnapshots] = useState<string[]>([]);
@@ -137,6 +142,9 @@ export default function InterviewLauncher({
   const tabTimerRef = useRef<number | null>(null);
   const faceTimerRef = useRef<number | null>(null);
   const screenViolationTimerRef = useRef<number | null>(null);
+  const lipSyncTimerRef = useRef<number | null>(null);
+  const lipSyncCheckIntervalRef = useRef<number | null>(null);
+  const cameraFreezeTimerRef = useRef<number | null>(null);
   const faceCheckRef = useRef<number | null>(null);
   const userVideoRef = useRef<HTMLVideoElement | null>(null);
   const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -146,6 +154,13 @@ export default function InterviewLauncher({
   const screenCheckIntervalRef = useRef<number | null>(null);
   const screenChangeBurstRef = useRef<{ count: number; windowStartMs: number }>({ count: 0, windowStartMs: 0 });
   const elapsedSecRef = useRef(0);
+  const statusRef = useRef(initialStatus);
+  const terminatingForSecurityRef = useRef(false);
+  const lipSyncPrevFrameRef = useRef<Uint8ClampedArray | null>(null);
+  const lipSyncLowMotionCountRef = useRef(0);
+  const lipSyncSuspiciousRef = useRef(false);
+  const cameraFreezeSuspiciousRef = useRef(false);
+  const micLevelRef = useRef(0);
   const micAudioContextRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const micMeterRAFRef = useRef<number | null>(null);
@@ -208,6 +223,25 @@ export default function InterviewLauncher({
   useEffect(() => {
     elapsedSecRef.current = elapsedSec;
   }, [elapsedSec]);
+
+  useEffect(() => {
+    statusRef.current = status;
+    if (status !== "in_progress") {
+      terminatingForSecurityRef.current = false;
+    }
+  }, [status]);
+
+  useEffect(() => {
+    micLevelRef.current = micLevel;
+  }, [micLevel]);
+
+  useEffect(() => {
+    lipSyncSuspiciousRef.current = lipSyncSuspicious;
+  }, [lipSyncSuspicious]);
+
+  useEffect(() => {
+    cameraFreezeSuspiciousRef.current = cameraFreezeSuspicious;
+  }, [cameraFreezeSuspicious]);
 
   useEffect(() => {
     const onOnline = () => setInternetOnline(true);
@@ -416,6 +450,9 @@ export default function InterviewLauncher({
       if (faceTimerRef.current) window.clearInterval(faceTimerRef.current);
       if (screenViolationTimerRef.current) window.clearInterval(screenViolationTimerRef.current);
       if (screenCheckIntervalRef.current) window.clearInterval(screenCheckIntervalRef.current);
+      if (lipSyncTimerRef.current) window.clearInterval(lipSyncTimerRef.current);
+      if (lipSyncCheckIntervalRef.current) window.clearInterval(lipSyncCheckIntervalRef.current);
+      if (cameraFreezeTimerRef.current) window.clearInterval(cameraFreezeTimerRef.current);
       userStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     };
@@ -448,6 +485,8 @@ export default function InterviewLauncher({
     let lastLoggedNoFace = false;
     let detectorBusy = false;
     let detectorFaceFrames = 0;
+    let prevFrameData: Uint8ClampedArray | null = null;
+    let lowMotionFrames = 0;
 
     function checkFrame() {
       faceCheckRef.current = requestAnimationFrame(checkFrame);
@@ -463,6 +502,19 @@ export default function InterviewLauncher({
       canvas.width = 80; canvas.height = 60;  // smaller = faster
       ctx.drawImage(video, 0, 0, 80, 60);
       const data = ctx.getImageData(0, 0, 80, 60).data;
+
+      let frameMotion = 0;
+      if (prevFrameData) {
+        let sampledMotion = 0;
+        for (let i = 0; i < data.length; i += 32) {
+          const currLuma = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          const prevLuma = prevFrameData[i] * 0.299 + prevFrameData[i + 1] * 0.587 + prevFrameData[i + 2] * 0.114;
+          frameMotion += Math.abs(currLuma - prevLuma);
+          sampledMotion += 1;
+        }
+        frameMotion = frameMotion / Math.max(1, sampledMotion);
+      }
+      prevFrameData = new Uint8ClampedArray(data);
 
       // Compute brightness for each of 16 blocks (4x4 grid)
       const blockBrightness: number[] = [];
@@ -560,6 +612,18 @@ export default function InterviewLauncher({
       const hasFace = hasFaceHeuristic || detectorFaceFrames > 0;
       if (detectorFaceFrames > 0) detectorFaceFrames -= 1;
 
+      const suspiciousFreezeEligible = listeningRef.current && micLevelRef.current > 18 && hasFace && !multipleFaces;
+      if (suspiciousFreezeEligible && prevFrameData && frameMotion < 0.55) {
+        lowMotionFrames += 1;
+      } else {
+        lowMotionFrames = Math.max(0, lowMotionFrames - 2);
+      }
+      const freezeSuspicious = lowMotionFrames >= 18;
+      if (freezeSuspicious !== cameraFreezeSuspiciousRef.current) {
+        cameraFreezeSuspiciousRef.current = freezeSuspicious;
+        setCameraFreezeSuspicious(freezeSuspicious);
+      }
+
       if (!hasFace) {
         noFaceFrameCount++;
         hardOcclusionFrameCount = hardOcclusion ? hardOcclusionFrameCount + 1 : Math.max(0, hardOcclusionFrameCount - 1);
@@ -631,6 +695,18 @@ export default function InterviewLauncher({
     }, 1000);
     return () => { if (faceTimerRef.current) { window.clearInterval(faceTimerRef.current); faceTimerRef.current = null; } };
   }, [status, cheatingTagged, faceVisible, multipleFaces]);
+
+  useEffect(() => {
+    if (status !== "in_progress" || cheatingTagged) return;
+    if (!multipleFaces) return;
+    logSecurityEvent(
+      "Multiple faces detected in camera feed.",
+      "multiple_faces_warning",
+      "high"
+    );
+    setMessage("Security warning: multiple faces detected. Keep only one person in frame.");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, cheatingTagged, multipleFaces]);
 
   // Screen change detection
   useEffect(() => {
@@ -725,6 +801,157 @@ export default function InterviewLauncher({
       setScreenViolationCountdown(null);
     };
   }, [status, cheatingTagged, sharingScreen]);
+
+  // Speech/video consistency: warns when strong audio appears without expected mouth-region motion.
+  useEffect(() => {
+    if (status !== "in_progress" || cheatingTagged || !cameraOn || !micOn) return;
+    const video = userVideoRef.current;
+    if (!video) return;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = 64;
+    canvas.height = 48;
+    lipSyncLowMotionCountRef.current = 0;
+    lipSyncPrevFrameRef.current = null;
+    setLipSyncSuspicious(false);
+    setMouthMotionLevel(0);
+
+    lipSyncCheckIntervalRef.current = window.setInterval(() => {
+      if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
+      ctx.drawImage(video, 0, 0, 64, 48);
+      const current = ctx.getImageData(0, 0, 64, 48).data;
+
+      if (!lipSyncPrevFrameRef.current) {
+        lipSyncPrevFrameRef.current = new Uint8ClampedArray(current);
+        return;
+      }
+
+      let delta = 0;
+      let samples = 0;
+      for (let y = 26; y < 45; y += 1) {
+        for (let x = 20; x < 45; x += 1) {
+          const i = (y * 64 + x) * 4;
+          const currLuma = current[i] * 0.299 + current[i + 1] * 0.587 + current[i + 2] * 0.114;
+          const prev = lipSyncPrevFrameRef.current;
+          const prevLuma = prev[i] * 0.299 + prev[i + 1] * 0.587 + prev[i + 2] * 0.114;
+          delta += Math.abs(currLuma - prevLuma);
+          samples += 1;
+        }
+      }
+
+      const meanMouthMotion = delta / Math.max(1, samples);
+      setMouthMotionLevel(Number(meanMouthMotion.toFixed(2)));
+      const audioActive = listeningRef.current && micLevelRef.current > 18;
+      const eligible = audioActive && faceVisible && !multipleFaces;
+
+      if (eligible && meanMouthMotion < 1.9) {
+        lipSyncLowMotionCountRef.current += 1;
+      } else {
+        lipSyncLowMotionCountRef.current = Math.max(0, lipSyncLowMotionCountRef.current - 2);
+      }
+
+      const suspicious = lipSyncLowMotionCountRef.current >= 9;
+      if (suspicious !== lipSyncSuspiciousRef.current) {
+        lipSyncSuspiciousRef.current = suspicious;
+        setLipSyncSuspicious(suspicious);
+      }
+      lipSyncPrevFrameRef.current = new Uint8ClampedArray(current);
+    }, 500);
+
+    return () => {
+      if (lipSyncCheckIntervalRef.current) {
+        window.clearInterval(lipSyncCheckIntervalRef.current);
+        lipSyncCheckIntervalRef.current = null;
+      }
+      lipSyncPrevFrameRef.current = null;
+      lipSyncLowMotionCountRef.current = 0;
+      setLipSyncSuspicious(false);
+      setMouthMotionLevel(0);
+    };
+  }, [status, cheatingTagged, cameraOn, micOn, faceVisible, multipleFaces]);
+
+  useEffect(() => {
+    if (status !== "in_progress" || cheatingTagged || !listening) return;
+    if (!lipSyncSuspicious) {
+      if (lipSyncTimerRef.current) {
+        window.clearInterval(lipSyncTimerRef.current);
+        lipSyncTimerRef.current = null;
+      }
+      setLipSyncViolationCountdown(null);
+      return;
+    }
+    if (lipSyncTimerRef.current) return;
+    logSecurityEvent(
+      "Speech and lip motion seem inconsistent. Candidate asked to keep face fully visible while speaking.",
+      "lip_sync_warning",
+      "high",
+      { mouthMotionLevel }
+    );
+    let remaining = 12;
+    setLipSyncViolationCountdown(remaining);
+    lipSyncTimerRef.current = window.setInterval(() => {
+      remaining -= 1;
+      setLipSyncViolationCountdown(remaining);
+      if (remaining > 0) return;
+      if (lipSyncTimerRef.current) {
+        window.clearInterval(lipSyncTimerRef.current);
+        lipSyncTimerRef.current = null;
+      }
+      terminateInterviewForSecurity(
+        "Cheating detected: prolonged speech/lip-motion mismatch.",
+        "lip_sync_timeout",
+        { mouthMotionLevel }
+      );
+    }, 1000);
+    return () => {
+      if (lipSyncTimerRef.current) {
+        window.clearInterval(lipSyncTimerRef.current);
+        lipSyncTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, cheatingTagged, lipSyncSuspicious, listening]);
+
+  useEffect(() => {
+    if (status !== "in_progress" || cheatingTagged || !listening) return;
+    if (!cameraFreezeSuspicious) {
+      if (cameraFreezeTimerRef.current) {
+        window.clearInterval(cameraFreezeTimerRef.current);
+        cameraFreezeTimerRef.current = null;
+      }
+      setCameraFreezeCountdown(null);
+      return;
+    }
+    if (cameraFreezeTimerRef.current) return;
+    logSecurityEvent(
+      "Camera feed appears static while candidate is speaking.",
+      "camera_freeze_warning",
+      "high"
+    );
+    let remaining = 10;
+    setCameraFreezeCountdown(remaining);
+    cameraFreezeTimerRef.current = window.setInterval(() => {
+      remaining -= 1;
+      setCameraFreezeCountdown(remaining);
+      if (remaining > 0) return;
+      if (cameraFreezeTimerRef.current) {
+        window.clearInterval(cameraFreezeTimerRef.current);
+        cameraFreezeTimerRef.current = null;
+      }
+      terminateInterviewForSecurity(
+        "Cheating detected: static camera feed while speaking.",
+        "camera_freeze_timeout"
+      );
+    }, 1000);
+    return () => {
+      if (cameraFreezeTimerRef.current) {
+        window.clearInterval(cameraFreezeTimerRef.current);
+        cameraFreezeTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, cheatingTagged, cameraFreezeSuspicious, listening]);
 
   function getTurnQueueKey() {
     return `${TURN_QUEUE_KEY_PREFIX}${interviewId}`;
@@ -839,6 +1066,20 @@ export default function InterviewLauncher({
     } finally {
       flushingSecurityRef.current = false;
     }
+  }
+
+  function terminateInterviewForSecurity(
+    details: string,
+    eventType: string,
+    evidence: Record<string, unknown> = {}
+  ) {
+    if (terminatingForSecurityRef.current) return;
+    terminatingForSecurityRef.current = true;
+    setCheatingTagged(true);
+    logSecurityEvent(details, eventType, "critical", evidence);
+    void saveTurn("assistant", details, "proctor");
+    setMessage(`Interview ended: ${details}`);
+    void endInterview();
   }
 
   function logSecurityEvent(
@@ -1216,6 +1457,20 @@ export default function InterviewLauncher({
         return;
       }
       const displayStream = await mediaDevicesWithShare.getDisplayMedia({ video: true, audio: false });
+      const displaySurface = displayStream.getVideoTracks()[0]?.getSettings?.().displaySurface;
+      if (displaySurface && displaySurface !== "monitor") {
+        displayStream.getTracks().forEach((t) => t.stop());
+        setCheckState("failed");
+        setSharingScreen(false);
+        setMessage("Please share your entire screen (not a single window or browser tab).");
+        logSecurityEvent(
+          "Screen share rejected: candidate shared window/tab instead of entire monitor.",
+          "screen_share_not_fullscreen",
+          "high",
+          { displaySurface }
+        );
+        return;
+      }
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current = displayStream;
       displayStream.getVideoTracks().forEach((track) => {
@@ -1223,6 +1478,12 @@ export default function InterviewLauncher({
           setSharingScreen(false);
           screenStreamRef.current = null;
           logSecurityEvent("Screen sharing stopped by candidate.", "screen_share_stopped", "critical");
+          if (statusRef.current === "in_progress") {
+            terminateInterviewForSecurity(
+              "Cheating detected: screen sharing stopped during interview.",
+              "screen_share_stopped_timeout"
+            );
+          }
         };
       });
       setSharingScreen(true);
@@ -1656,6 +1917,26 @@ export default function InterviewLauncher({
         return;
       }
       const stream = await mediaDevicesWithShare.getDisplayMedia({ video: true, audio: false });
+      const displaySurface = stream.getVideoTracks()[0]?.getSettings?.().displaySurface;
+      if (displaySurface && displaySurface !== "monitor") {
+        stream.getTracks().forEach((t) => t.stop());
+        setSharingScreen(false);
+        setMessage("Security policy: share the entire screen only.");
+        logSecurityEvent(
+          "Candidate attempted non-fullscreen screen sharing during interview.",
+          "screen_share_not_fullscreen",
+          "critical",
+          { displaySurface }
+        );
+        if (statusRef.current === "in_progress") {
+          terminateInterviewForSecurity(
+            "Cheating detected: non-fullscreen screen sharing.",
+            "screen_share_not_fullscreen_timeout",
+            { displaySurface }
+          );
+        }
+        return;
+      }
       screenStreamRef.current = stream;
       setSharingScreen(true);
       stream.getVideoTracks().forEach((track) => {
@@ -1663,6 +1944,12 @@ export default function InterviewLauncher({
           setSharingScreen(false);
           screenStreamRef.current = null;
           logSecurityEvent("Screen sharing ended while interview is active.", "screen_share_stopped", "critical");
+          if (statusRef.current === "in_progress") {
+            terminateInterviewForSecurity(
+              "Cheating detected: screen sharing stopped during interview.",
+              "screen_share_stopped_timeout"
+            );
+          }
         };
       });
       setMessage("Screen sharing active.");
@@ -2354,7 +2641,7 @@ export default function InterviewLauncher({
                 </div>
 
                 {/* SECURITY VIOLATION BANNERS */}
-                {(faceViolationCountdown !== null || securityCountdown !== null || tabCountdown !== null || screenViolationCountdown !== null) && (
+                {(faceViolationCountdown !== null || securityCountdown !== null || tabCountdown !== null || screenViolationCountdown !== null || lipSyncViolationCountdown !== null || cameraFreezeCountdown !== null) && (
                   <div className="absolute inset-x-0 top-0 z-50">
                     {faceViolationCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-orange-600/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
@@ -2378,6 +2665,18 @@ export default function InterviewLauncher({
                       <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">🚨</span>
                         <span>SCREEN SWITCHING DETECTED — Return to a stable screen in {screenViolationCountdown}s or interview terminates</span>
+                      </div>
+                    )}
+                    {lipSyncViolationCountdown !== null && (
+                      <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
+                        <span className="animate-pulse text-lg">🚨</span>
+                        <span>SPEECH/LIP MISMATCH DETECTED — Speak clearly while face is visible in {lipSyncViolationCountdown}s or interview terminates</span>
+                      </div>
+                    )}
+                    {cameraFreezeCountdown !== null && (
+                      <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
+                        <span className="animate-pulse text-lg">🚨</span>
+                        <span>STATIC CAMERA FEED DETECTED — Move naturally while speaking in {cameraFreezeCountdown}s or interview terminates</span>
                       </div>
                     )}
                   </div>
@@ -2412,7 +2711,9 @@ export default function InterviewLauncher({
                   {[
                     { label: "Face Visible", ok: faceVisible, icon: "👤" },
                     { label: "Camera Active", ok: cameraOn, icon: "📷" },
+                    { label: "Camera Motion", ok: !cameraFreezeSuspicious, icon: "🎥" },
                     { label: "Microphone Active", ok: micOn, icon: "🎤" },
+                    { label: "Speech-Lip Sync", ok: !lipSyncSuspicious, icon: "🗣" },
                     { label: "Screen Sharing", ok: sharingScreen, icon: "🖥" },
                     { label: "Screen Stability", ok: screenViolationCountdown === null, icon: "🧭" },
                     { label: "Internet Stable", ok: internetQuality === "good", icon: "🌐" },
@@ -2429,6 +2730,11 @@ export default function InterviewLauncher({
                 {screenChanged && (
                   <div className="mt-3 rounded-lg bg-orange-900/20 border border-orange-500/30 px-3 py-2 text-xs text-orange-400">
                     ⚠ Screen content change detected
+                  </div>
+                )}
+                {listening && (
+                  <div className="mt-2 rounded-lg bg-sky-900/20 border border-sky-500/20 px-3 py-2 text-xs text-sky-300">
+                    Lip motion signal: {mouthMotionLevel.toFixed(2)}
                   </div>
                 )}
               </div>
