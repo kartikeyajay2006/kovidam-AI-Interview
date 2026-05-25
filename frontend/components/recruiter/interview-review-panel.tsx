@@ -53,10 +53,14 @@ type ReviewPacket = {
 
 async function fetchWithFallback(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${PRIMARY_API}${path}`, init);
+    const primary = await fetch(`${PRIMARY_API}${path}`, init);
+    if (primary.status !== 502 && primary.status !== 503 && primary.status !== 504) {
+      return primary;
+    }
   } catch {
-    return fetch(`${FALLBACK_API}${path}`, init);
+    // fallback below
   }
+  return fetch(`${FALLBACK_API}${path}`, init);
 }
 
 export default function InterviewReviewPanel() {

@@ -101,6 +101,60 @@ def _is_incomplete_answer(text: str) -> bool:
     return any(p in low for p in weak_phrases) and len(words) < 15
 
 
+def _extract_keywords(text: str, limit: int = 3) -> list[str]:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{3,}", (text or "").lower())
+    stop = {
+        "that", "this", "with", "from", "have", "your", "about", "because", "would", "could",
+        "there", "their", "while", "where", "what", "when", "which", "into", "under", "over",
+        "like", "just", "really", "created", "system", "project", "projects", "thing", "things",
+        "able", "tell", "work", "working", "using", "used",
+    }
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        if tok in stop or tok in seen:
+            continue
+        seen.add(tok)
+        ordered.append(tok)
+        if len(ordered) >= limit:
+            break
+    return ordered
+
+
+def _fallback_intro_question(candidate_name: str, role_title: str) -> str:
+    name = candidate_name.strip().split()[0] if candidate_name.strip() else "there"
+    role = role_title.strip() or "this role"
+    return (
+        f"Hi {name}, could you walk me through one backend project you built that's most relevant to {role}, "
+        "and what your exact contribution was?"
+    )
+
+
+def _fallback_next_question(cleaned_history: list[dict], role_title: str, parsed_sections: dict) -> str:
+    last_candidate = ""
+    for turn in reversed(cleaned_history):
+        if turn.get("role") == "candidate":
+            last_candidate = str(turn.get("content") or "").strip()
+            break
+    if last_candidate:
+        kws = _extract_keywords(last_candidate, limit=2)
+        if kws:
+            return (
+                f"You mentioned {kws[0]}"
+                + (f" and {kws[1]}" if len(kws) > 1 else "")
+                + ". Can you explain the exact steps you took, one challenge you hit, and how you measured success?"
+            )
+        return "Can you give one concrete example with your exact implementation steps, trade-offs, and final outcome?"
+
+    skills = parsed_sections.get("skills") if isinstance(parsed_sections, dict) else []
+    if isinstance(skills, list) and skills:
+        skill = str(skills[0]).strip()
+        if skill:
+            return f"Let's go deeper on {skill}: where did it break in production, and what did you change to fix it?"
+    role = role_title.strip() or "this role"
+    return f"For {role}, can you describe a production incident you debugged and the step-by-step approach you used to resolve it?"
+
+
 def _extract_parsed_sections(parsed_resume_json: dict) -> dict:
     data = parsed_resume_json.get("data") if isinstance(parsed_resume_json, dict) else {}
     if not isinstance(data, dict):
@@ -232,7 +286,7 @@ def _chat_json(settings, prompt: dict, schema_key: str, temperature: float, max_
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    with httpx.Client(timeout=20) as client:
+    with httpx.Client(timeout=10) as client:
         resp = client.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
@@ -355,6 +409,49 @@ def _generate_ai_followups(*, settings, main_question: str, role_title: str, job
     return q, "api_success"
 
 
+def _generate_ai_next_question(
+    *,
+    settings,
+    role_title: str,
+    job_description: str,
+    interview_type: str,
+    difficulty: str,
+    parsed_sections: dict,
+    cleaned_history: list[dict],
+) -> tuple[str, str]:
+    prompt = {
+        "task": "Generate the next interview question based on the full live conversation.",
+        "job_context": {
+            "role_title": role_title,
+            "job_description": (job_description or "")[:3000],
+            "interview_type": interview_type,
+            "difficulty": difficulty,
+        },
+        "candidate_context": parsed_sections,
+        "conversation_history": cleaned_history[-24:],
+        "constraints": [
+            "Return strict JSON only",
+            "Ask exactly one question ending with '?'",
+            "Use natural spoken interviewer style",
+            "Must connect directly to candidate's latest answer",
+            "Do not repeat previous questions",
+            "Do not invent candidate achievements or metrics",
+            "If candidate answer is weak, ask for one concrete example",
+            "Keep concise and high-signal",
+        ],
+        "output_schema": {"question": "string"},
+    }
+    q = _chat_json(
+        settings,
+        prompt,
+        "question",
+        0.25,
+        110,
+        "You are an expert human interviewer. Ask one relevant, realistic next question only. Return strict JSON.",
+    )
+    return q, "api_success"
+
+
 def _generate_ai_repeat_response(*, settings, last_question: str, candidate_request: str) -> tuple[str, str]:
     prompt = {
         "task": "Candidate asked to repeat or rephrase. Return one natural assistant response.",
@@ -394,16 +491,10 @@ def generate_interview_question(
 ) -> tuple[str, str]:
     cleaned_history = _trim_history(history)
     settings = get_settings()
+    use_ai = bool((settings.openai_api_key or "").strip())
 
     parsed_sections = _extract_parsed_sections(parsed_resume_json)
-    main_questions = [b["question"] for b in human_question_bank if b.get("type") == "main" and b.get("question")]
-    if not main_questions:
-        main_questions = _build_contextual_main_questions(
-            role_title=role_title,
-            job_description=job_description,
-            parsed_sections=parsed_sections,
-            resume_skills=resume_skills,
-        )
+    _ = [b["question"] for b in human_question_bank if b.get("type") == "main" and b.get("question")]
 
     last_candidate_turn = None
     for turn in reversed(cleaned_history):
@@ -418,12 +509,17 @@ def generate_interview_question(
                 last_assistant_question = str(turn.get("content", "")).strip()
                 break
         if last_assistant_question:
-            ai_repeat, repeat_meta = _generate_ai_repeat_response(
-                settings=settings,
-                last_question=last_assistant_question,
-                candidate_request=last_candidate_turn,
-            )
-            return ai_repeat, f"source=repeat_guard state=hold {repeat_meta}"
+            if use_ai:
+                try:
+                    ai_repeat, repeat_meta = _generate_ai_repeat_response(
+                        settings=settings,
+                        last_question=last_assistant_question,
+                        candidate_request=last_candidate_turn,
+                    )
+                    return ai_repeat, f"source=repeat_guard state=hold {repeat_meta}"
+                except Exception:
+                    pass
+            return f"Sure, let me repeat that: {last_assistant_question}", "source=repeat_guard state=hold fallback=local"
 
     if last_candidate_turn and _is_incomplete_answer(last_candidate_turn):
         return (
@@ -432,52 +528,41 @@ def generate_interview_question(
         )
 
     asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
-    current_main_idx, followups_done = _determine_main_state(cleaned_history, main_questions)
     _ = _sanitize_resume_text(resume_text)
     _ = resume_skills
 
     if not asked_questions:
-        intro_q, intro_meta = _generate_ai_intro_question(
-            settings=settings,
-            candidate_name=candidate_name,
-            role_title=role_title,
-            job_description=job_description,
-            interview_type=interview_type,
-            difficulty=difficulty,
-        )
-        return intro_q, f"source=intro state=interview_start {intro_meta}"
+        if use_ai:
+            try:
+                intro_q, intro_meta = _generate_ai_intro_question(
+                    settings=settings,
+                    candidate_name=candidate_name,
+                    role_title=role_title,
+                    job_description=job_description,
+                    interview_type=interview_type,
+                    difficulty=difficulty,
+                )
+                return intro_q, f"source=intro state=interview_start {intro_meta}"
+            except Exception:
+                pass
+        return _fallback_intro_question(candidate_name, role_title), "source=intro state=interview_start fallback=local"
 
-    if followups_done >= 2:
-        next_main_idx = current_main_idx + 1
-        if next_main_idx >= len(main_questions):
-            return INTERVIEW_COMPLETE_SENTINEL, "source=complete state=all_main_completed"
-        ai_main_q, main_meta = _generate_ai_main_question(
-            settings=settings,
-            main_topic=main_questions[next_main_idx],
-            role_title=role_title,
-            job_description=job_description,
-            interview_type=interview_type,
-            difficulty=difficulty,
-            parsed_sections=parsed_sections,
-            cleaned_history=cleaned_history,
-        )
-        return ai_main_q, f"source=main state=main_{next_main_idx + 1}_start {main_meta}"
+    if use_ai:
+        try:
+            next_q, next_meta = _generate_ai_next_question(
+                settings=settings,
+                role_title=role_title,
+                job_description=job_description,
+                interview_type=interview_type,
+                difficulty=difficulty,
+                parsed_sections=parsed_sections,
+                cleaned_history=cleaned_history,
+            )
+            return next_q, f"source=ai_dynamic_next state=live_flow {next_meta}"
+        except Exception:
+            pass
 
-    current_main_question = main_questions[current_main_idx]
-    followup_q, followup_meta = _generate_ai_followups(
-        settings=settings,
-        main_question=current_main_question,
-        role_title=role_title,
-        job_description=job_description,
-        interview_type=interview_type,
-        difficulty=difficulty,
-        parsed_sections=parsed_sections,
-        cleaned_history=cleaned_history,
-    )
-    return followup_q, (
-        f"source=ai_followup state=main_{current_main_idx + 1} "
-        f"followup={followups_done + 1}/2 {followup_meta}"
-    )
+    return _fallback_next_question(cleaned_history, role_title, parsed_sections), "source=ai_dynamic_next state=live_flow fallback=local"
 
 
 def analyze_candidate_answer(

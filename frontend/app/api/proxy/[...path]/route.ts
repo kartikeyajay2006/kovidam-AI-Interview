@@ -4,10 +4,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const BACKEND_BASE = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000";
+const BACKEND_CANDIDATES = Array.from(
+  new Set(
+    [BACKEND_BASE, "http://127.0.0.1:8000", "http://localhost:8000", "http://backend:8000"].filter(Boolean)
+  )
+);
 
-function buildTarget(path: string[], search: string): string {
+function buildTarget(base: string, path: string[], search: string): string {
   const joined = path.join("/");
-  return `${BACKEND_BASE}/${joined}${search}`;
+  return `${base.replace(/\/+$/, "")}/${joined}${search}`;
 }
 
 function copySafeHeaders(src: Headers): Headers {
@@ -23,52 +28,63 @@ function copySafeHeaders(src: Headers): Headers {
 }
 
 async function forward(req: NextRequest, path: string[]) {
-  try {
-    const url = new URL(req.url);
-    const target = buildTarget(path, url.search);
+  const url = new URL(req.url);
+  const headers = copySafeHeaders(req.headers);
+  const contentType = req.headers.get("content-type") || "";
+  let body: BodyInit | undefined;
 
-    const headers = copySafeHeaders(req.headers);
-    const contentType = req.headers.get("content-type") || "";
-    let body: BodyInit | undefined;
-
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      if (contentType.includes("multipart/form-data")) {
-        body = await req.formData();
-        headers.delete("content-type");
-      } else if (contentType.includes("application/json")) {
-        body = JSON.stringify(await req.json());
-        headers.set("content-type", "application/json");
-      } else {
-        body = await req.text();
-      }
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    if (contentType.includes("multipart/form-data")) {
+      body = await req.formData();
+      headers.delete("content-type");
+    } else if (contentType.includes("application/json")) {
+      body = JSON.stringify(await req.json());
+      headers.set("content-type", "application/json");
+    } else {
+      body = await req.text();
     }
-
-    const upstream = await fetch(target, {
-      method: req.method,
-      headers,
-      body,
-      cache: "no-store",
-    });
-
-    const resHeaders = copySafeHeaders(upstream.headers);
-    const contentTypeOut = upstream.headers.get("content-type") || "";
-
-    if (contentTypeOut.includes("application/json")) {
-      const data = await upstream.json();
-      return NextResponse.json(data, { status: upstream.status, headers: resHeaders });
-    }
-
-    const text = await upstream.text();
-    return new NextResponse(text, { status: upstream.status, headers: resHeaders });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        detail: "Proxy request failed",
-        error: error instanceof Error ? error.message : "unknown error",
-      },
-      { status: 502 }
-    );
   }
+
+  const errors: string[] = [];
+  for (const base of BACKEND_CANDIDATES) {
+    const target = buildTarget(base, path, url.search);
+    try {
+      const upstream = await fetch(target, {
+        method: req.method,
+        headers,
+        body,
+        cache: "no-store",
+      });
+
+      const resHeaders = copySafeHeaders(upstream.headers);
+      const contentTypeOut = upstream.headers.get("content-type") || "";
+
+      if (contentTypeOut.includes("application/json")) {
+        try {
+          const data = await upstream.json();
+          return NextResponse.json(data, { status: upstream.status, headers: resHeaders });
+        } catch {
+          const raw = await upstream.text();
+          return new NextResponse(raw, { status: upstream.status, headers: resHeaders });
+        }
+      }
+
+      const text = await upstream.text();
+      return new NextResponse(text, { status: upstream.status, headers: resHeaders });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "unknown error";
+      errors.push(`${base}: ${msg}`);
+    }
+  }
+
+  return NextResponse.json(
+    {
+      detail: "Proxy request failed",
+      tried: BACKEND_CANDIDATES,
+      errors,
+    },
+    { status: 502 }
+  );
 }
 
 export async function GET(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {

@@ -62,6 +62,16 @@ async function readJsonSafe(res: Response): Promise<{ ok: true; data: any } | { 
 }
 
 const NAV_ITEMS = ["Home", "Interviews", "Analytics", "Reports", "Settings", "Profile"];
+const CAMERA_VERIFICATION_PHOTO_COUNT = 2;
+const CAMERA_POSE_GUIDES = [
+  "Look straight at the camera.",
+  "Turn your face slightly to your left.",
+];
+const MIC_VERIFICATION_PHRASES = [
+  "I confirm this is my voice for interview verification.",
+  "I am ready for this interview and speaking from my own device.",
+  "This is a live voice check for my interview session.",
+];
 
 export default function InterviewLauncher({
   interviewId,
@@ -98,11 +108,27 @@ export default function InterviewLauncher({
   const [multipleFaces, setMultipleFaces] = useState(false);
   const [faceViolationCountdown, setFaceViolationCountdown] = useState<number | null>(null);
   const [screenChanged, setScreenChanged] = useState(false);
+  const [screenViolationCountdown, setScreenViolationCountdown] = useState<number | null>(null);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [answerDraft, setAnswerDraft] = useState("");
+  const [cameraSnapshots, setCameraSnapshots] = useState<string[]>([]);
+  const [cameraIdentityVerified, setCameraIdentityVerified] = useState(false);
+  const [cameraPoseGuideIdx, setCameraPoseGuideIdx] = useState(0);
+  const [cameraVerificationHint, setCameraVerificationHint] = useState("");
+  const [cameraCaptureFlash, setCameraCaptureFlash] = useState(false);
+  const [micVerificationPhrase, setMicVerificationPhrase] = useState(MIC_VERIFICATION_PHRASES[0]);
+  const [micVerificationTranscript, setMicVerificationTranscript] = useState("");
+  const [micIdentityVerified, setMicIdentityVerified] = useState(false);
+  const [micVerificationInProgress, setMicVerificationInProgress] = useState(false);
+  const [micVerificationError, setMicVerificationError] = useState("");
+  const [micVerificationScore, setMicVerificationScore] = useState(0);
+  const [micLevel, setMicLevel] = useState(0);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const faceDetectorRef = useRef<FaceDetectorLike | null>(null);
   const noSpeechRetryRef = useRef(0);
+  const speechBufferRef = useRef("");
+  const speechSilenceTimerRef = useRef<number | null>(null);
+  const speechSubmittedRef = useRef(false);
   const lastEventLoggedAtRef = useRef<Record<string, number>>({});
   const listeningRef = useRef(false);
   const historyRef = useRef<Turn[]>([]);
@@ -110,6 +136,7 @@ export default function InterviewLauncher({
   const flushingSecurityRef = useRef(false);
   const tabTimerRef = useRef<number | null>(null);
   const faceTimerRef = useRef<number | null>(null);
+  const screenViolationTimerRef = useRef<number | null>(null);
   const faceCheckRef = useRef<number | null>(null);
   const userVideoRef = useRef<HTMLVideoElement | null>(null);
   const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -117,7 +144,18 @@ export default function InterviewLauncher({
   const screenStreamRef = useRef<MediaStream | null>(null);
   const prevScreenPixelsRef = useRef<Uint8ClampedArray | null>(null);
   const screenCheckIntervalRef = useRef<number | null>(null);
+  const screenChangeBurstRef = useRef<{ count: number; windowStartMs: number }>({ count: 0, windowStartMs: 0 });
   const elapsedSecRef = useRef(0);
+  const micAudioContextRef = useRef<AudioContext | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micMeterRAFRef = useRef<number | null>(null);
+
+  function clearSpeechSilenceTimer() {
+    if (speechSilenceTimerRef.current) {
+      window.clearTimeout(speechSilenceTimerRef.current);
+      speechSilenceTimerRef.current = null;
+    }
+  }
 
   function attachUserStreamToVideo(stream: MediaStream | null) {
     if (!userVideoRef.current || !stream) return;
@@ -155,6 +193,8 @@ export default function InterviewLauncher({
 
   useEffect(() => {
     setMounted(true);
+    const idx = Math.floor(Math.random() * MIC_VERIFICATION_PHRASES.length);
+    setMicVerificationPhrase(MIC_VERIFICATION_PHRASES[idx]);
   }, []);
 
   useEffect(() => {
@@ -241,6 +281,15 @@ export default function InterviewLauncher({
     void flushQueuedSecurityEvents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [internetOnline]);
+
+  useEffect(() => {
+    if (setupStep === "microphone" && micOn) {
+      void startMicLevelMonitor();
+      return;
+    }
+    stopMicLevelMonitor();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupStep, micOn]);
 
   useEffect(() => {
     if (status !== "in_progress") return;
@@ -361,8 +410,11 @@ export default function InterviewLauncher({
     return () => {
       window.speechSynthesis.cancel();
       recognitionRef.current?.stop();
+      clearSpeechSilenceTimer();
+      stopMicLevelMonitor();
       if (faceCheckRef.current) cancelAnimationFrame(faceCheckRef.current);
       if (faceTimerRef.current) window.clearInterval(faceTimerRef.current);
+      if (screenViolationTimerRef.current) window.clearInterval(screenViolationTimerRef.current);
       if (screenCheckIntervalRef.current) window.clearInterval(screenCheckIntervalRef.current);
       userStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -378,7 +430,7 @@ export default function InterviewLauncher({
       FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => FaceDetectorLike;
     };
     if (maybeWindow.FaceDetector && !faceDetectorRef.current) {
-      faceDetectorRef.current = new maybeWindow.FaceDetector({ fastMode: true, maxDetectedFaces: 2 });
+      faceDetectorRef.current = new maybeWindow.FaceDetector({ fastMode: true, maxDetectedFaces: 4 });
     }
   }, []);
 
@@ -392,9 +444,10 @@ export default function InterviewLauncher({
     let noFaceFrameCount = 0;       // consecutive frames with no face detected
     let hardOcclusionFrameCount = 0;
     let frameCounter = 0;           // throttle: only analyse every 6th frame
-    const NO_FACE_TRIGGER_FRAMES = 120; // ~4s at 30fps before declaring "no face"
+    const NO_FACE_TRIGGER_FRAMES = 170; // relaxed to reduce false positives in low-light streams
     let lastLoggedNoFace = false;
     let detectorBusy = false;
+    let detectorFaceFrames = 0;
 
     function checkFrame() {
       faceCheckRef.current = requestAnimationFrame(checkFrame);
@@ -465,19 +518,19 @@ export default function InterviewLauncher({
         (variance < 55 && edgeDensity < 4.8);
 
       const likelyOccluded =
-        mean < 12 ||
-        (dominantRatio > 0.9 && edgeDensity < 5.2) ||
-        (variance < 75 && centerVariance < 22);
+        mean < 9 ||
+        (dominantRatio > 0.93 && edgeDensity < 4.6) ||
+        (variance < 58 && centerVariance < 14);
 
-      const hasFace =
+      const hasFaceHeuristic =
         !hardOcclusion &&
         !likelyOccluded &&
-        mean > 14 &&
-        brightPixels >= 3 &&
-        (variance > 70 || edgeDensity > 5);
+        mean > 10 &&
+        brightPixels >= 2 &&
+        (variance > 45 || edgeDensity > 3.8);
 
       // Prefer real face detection when supported to reduce false positives.
-      if (!detectorBusy && faceDetectorRef.current && frameCounter % 12 === 0) {
+      if (!detectorBusy && faceDetectorRef.current && frameCounter % 10 === 0) {
         detectorBusy = true;
         void faceDetectorRef.current
           .detect(canvas)
@@ -485,10 +538,11 @@ export default function InterviewLauncher({
             const validFaces = (faces || []).filter((f) => {
               const w = Number(f.boundingBox?.width || 0);
               const h = Number(f.boundingBox?.height || 0);
-              return w > 8 && h > 8;
+              return w > 6 && h > 6;
             });
             setMultipleFaces(validFaces.length > 1);
             if (validFaces.length >= 1) {
+              detectorFaceFrames = 8;
               noFaceFrameCount = 0;
               hardOcclusionFrameCount = 0;
               if (lastLoggedNoFace) lastLoggedNoFace = false;
@@ -502,6 +556,9 @@ export default function InterviewLauncher({
             detectorBusy = false;
           });
       }
+
+      const hasFace = hasFaceHeuristic || detectorFaceFrames > 0;
+      if (detectorFaceFrames > 0) detectorFaceFrames -= 1;
 
       if (!hasFace) {
         noFaceFrameCount++;
@@ -518,7 +575,7 @@ export default function InterviewLauncher({
       }
 
       // Only declare "no face" after sustained absence (avoids flicker on blink/look-away)
-      if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES && hardOcclusionFrameCount >= 45) {
+      if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES && hardOcclusionFrameCount >= 65) {
         setFaceVisible(false);
         if (!lastLoggedNoFace) {
           logSecurityEvent("Face not visible in camera.", "face_not_visible", "high");
@@ -547,30 +604,30 @@ export default function InterviewLauncher({
       return;
     }
     if (faceTimerRef.current) return;
-    setFaceViolationCountdown(20);
+    let remaining = 20;
+    setFaceViolationCountdown(remaining);
     faceTimerRef.current = window.setInterval(() => {
-      setFaceViolationCountdown(prev => {
-        if (prev === null) return null;
-        if (prev <= 1) {
-          if (faceTimerRef.current) { window.clearInterval(faceTimerRef.current); faceTimerRef.current = null; }
-          setCheatingTagged(true);
-          logSecurityEvent(
-            "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
-            multipleFaces ? "multiple_faces_detected" : "face_not_visible_timeout",
-            "critical",
-            { multipleFaces }
-          );
-          void saveTurn(
-            "assistant",
-            "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
-            "proctor"
-          );
-          setMessage("Interview ended: Face compliance violation.");
-          void endInterview();
-          return 0;
-        }
-        return prev - 1;
-      });
+      remaining -= 1;
+      setFaceViolationCountdown(remaining);
+      if (remaining > 0) return;
+      if (faceTimerRef.current) {
+        window.clearInterval(faceTimerRef.current);
+        faceTimerRef.current = null;
+      }
+      setCheatingTagged(true);
+      logSecurityEvent(
+        "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
+        multipleFaces ? "multiple_faces_detected" : "face_not_visible_timeout",
+        "critical",
+        { multipleFaces }
+      );
+      void saveTurn(
+        "assistant",
+        "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
+        "proctor"
+      );
+      setMessage("Interview ended: Face compliance violation.");
+      void endInterview();
     }, 1000);
     return () => { if (faceTimerRef.current) { window.clearInterval(faceTimerRef.current); faceTimerRef.current = null; } };
   }, [status, cheatingTagged, faceVisible, multipleFaces]);
@@ -590,26 +647,83 @@ export default function InterviewLauncher({
       const imageData = ctx.getImageData(0, 0, 80, 45).data;
       if (prevScreenPixelsRef.current) {
         let deltaSum = 0;
+        let changedSamples = 0;
+        let samples = 0;
         const prev = prevScreenPixelsRef.current;
-        for (let i = 0; i < imageData.length; i += 24) {
-          deltaSum += Math.abs(imageData[i] - prev[i]);
+        for (let i = 0; i < imageData.length; i += 16) {
+          const currLuma = imageData[i] * 0.299 + imageData[i + 1] * 0.587 + imageData[i + 2] * 0.114;
+          const prevLuma = prev[i] * 0.299 + prev[i + 1] * 0.587 + prev[i + 2] * 0.114;
+          const diff = Math.abs(currLuma - prevLuma);
+          deltaSum += diff;
+          if (diff > 18) changedSamples += 1;
+          samples += 1;
         }
-        const meanDelta = deltaSum / (imageData.length / 24);
-        if (meanDelta > 22) {
+        const meanDelta = deltaSum / Math.max(1, samples);
+        const changedRatio = changedSamples / Math.max(1, samples);
+        if (meanDelta > 10.5 || changedRatio > 0.24) {
           setScreenChanged(true);
           logSecurityEvent(
             "Screen content changed during interview.",
             "screen_change_detected",
-            "low",
-            { meanDelta: Number(meanDelta.toFixed(2)) }
+            "medium",
+            { meanDelta: Number(meanDelta.toFixed(2)), changedRatio: Number(changedRatio.toFixed(3)) }
           );
+          const nowMs = Date.now();
+          const burst = screenChangeBurstRef.current;
+          if (!burst.windowStartMs || nowMs - burst.windowStartMs > 30000) {
+            screenChangeBurstRef.current = { count: 1, windowStartMs: nowMs };
+          } else {
+            screenChangeBurstRef.current = { count: burst.count + 1, windowStartMs: burst.windowStartMs };
+          }
+          if (screenChangeBurstRef.current.count >= 3 && screenViolationTimerRef.current === null) {
+            let remaining = 10;
+            setScreenViolationCountdown(remaining);
+            screenViolationTimerRef.current = window.setInterval(() => {
+              remaining -= 1;
+              setScreenViolationCountdown(remaining);
+              if (remaining > 0) return;
+              if (screenViolationTimerRef.current) {
+                window.clearInterval(screenViolationTimerRef.current);
+                screenViolationTimerRef.current = null;
+              }
+              setCheatingTagged(true);
+              logSecurityEvent(
+                "Cheating detected: excessive screen switching/content changes.",
+                "screen_change_timeout",
+                "critical",
+                { burstCount: screenChangeBurstRef.current.count }
+              );
+              void saveTurn(
+                "assistant",
+                "Cheating detected: excessive screen switching/content changes.",
+                "proctor"
+              );
+              setMessage("Interview ended: excessive screen switching detected.");
+              void endInterview();
+            }, 1000);
+          }
+        } else if (screenViolationTimerRef.current && meanDelta < 6.5 && changedRatio < 0.08) {
+          if (screenViolationTimerRef.current) {
+            window.clearInterval(screenViolationTimerRef.current);
+            screenViolationTimerRef.current = null;
+          }
+          setScreenViolationCountdown(null);
+          screenChangeBurstRef.current = { count: 0, windowStartMs: Date.now() };
+          logSecurityEvent("Screen stabilized after previous switches.", "screen_stabilized", "info");
         }
       }
       prevScreenPixelsRef.current = new Uint8ClampedArray(imageData);
-    }, 3000);
+    }, 1800);
 
     screenVideo.play().catch(() => {});
-    return () => { if (screenCheckIntervalRef.current) window.clearInterval(screenCheckIntervalRef.current); };
+    return () => {
+      if (screenCheckIntervalRef.current) window.clearInterval(screenCheckIntervalRef.current);
+      if (screenViolationTimerRef.current) {
+        window.clearInterval(screenViolationTimerRef.current);
+        screenViolationTimerRef.current = null;
+      }
+      setScreenViolationCountdown(null);
+    };
   }, [status, cheatingTagged, sharingScreen]);
 
   function getTurnQueueKey() {
@@ -748,6 +862,107 @@ export default function InterviewLauncher({
     const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
     const ss = String(totalSec % 60).padStart(2, "0");
     return `${mm}:${ss}`;
+  }
+
+  function normalizeSpeech(text: string): string[] {
+    return (text || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function speechMatchScore(expected: string, actual: string): number {
+    const expectedTokens = normalizeSpeech(expected);
+    const actualTokens = normalizeSpeech(actual);
+    if (!expectedTokens.length || !actualTokens.length) return 0;
+    const actualSet = new Set(actualTokens);
+    const matched = expectedTokens.filter((t) => actualSet.has(t)).length;
+    return matched / expectedTokens.length;
+  }
+
+  function nextMicPhrase() {
+    const pool = MIC_VERIFICATION_PHRASES.filter((p) => p !== micVerificationPhrase);
+    const pick = pool[Math.floor(Math.random() * pool.length)] || MIC_VERIFICATION_PHRASES[0];
+    setMicVerificationPhrase(pick);
+    setMicVerificationTranscript("");
+    setMicVerificationError("");
+    setMicVerificationScore(0);
+  }
+
+  function snapshotDifferenceScore(prevDataUrl: string, nextDataUrl: string): Promise<number> {
+    return new Promise((resolve) => {
+      const prevImg = new Image();
+      const nextImg = new Image();
+      let loaded = 0;
+      const done = () => {
+        loaded += 1;
+        if (loaded < 2) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = 80;
+        canvas.height = 60;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return resolve(1);
+
+        ctx.drawImage(prevImg, 0, 0, 80, 60);
+        const prevData = ctx.getImageData(0, 0, 80, 60).data;
+        ctx.drawImage(nextImg, 0, 0, 80, 60);
+        const nextData = ctx.getImageData(0, 0, 80, 60).data;
+
+        let delta = 0;
+        for (let i = 0; i < prevData.length; i += 16) {
+          delta += Math.abs(prevData[i] - nextData[i]);
+        }
+        resolve(delta / (prevData.length / 16));
+      };
+      prevImg.onload = done;
+      nextImg.onload = done;
+      prevImg.src = prevDataUrl;
+      nextImg.src = nextDataUrl;
+    });
+  }
+
+  function stopMicLevelMonitor() {
+    if (micMeterRAFRef.current) {
+      cancelAnimationFrame(micMeterRAFRef.current);
+      micMeterRAFRef.current = null;
+    }
+    if (micAudioContextRef.current) {
+      void micAudioContextRef.current.close().catch(() => undefined);
+      micAudioContextRef.current = null;
+    }
+    micAnalyserRef.current = null;
+    setMicLevel(0);
+  }
+
+  async function startMicLevelMonitor() {
+    stopMicLevelMonitor();
+    const stream = userStreamRef.current;
+    const hasAudio = stream?.getAudioTracks()?.length;
+    if (!stream || !hasAudio) return;
+    const Ctx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      const audioCtx = new Ctx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      micAudioContextRef.current = audioCtx;
+      micAnalyserRef.current = analyser;
+      const buffer = new Uint8Array(analyser.frequencyBinCount);
+
+      const tick = () => {
+        if (!micAnalyserRef.current) return;
+        micAnalyserRef.current.getByteFrequencyData(buffer);
+        const avg = buffer.reduce((a, b) => a + b, 0) / buffer.length;
+        setMicLevel(Math.min(100, (avg / 160) * 100));
+        micMeterRAFRef.current = requestAnimationFrame(tick);
+      };
+      micMeterRAFRef.current = requestAnimationFrame(tick);
+    } catch {
+      // ignore meter failures
+    }
   }
 
   function speak(text: string) {
@@ -933,8 +1148,12 @@ export default function InterviewLauncher({
       }
       setCameraOn(true);
       setCheckState("passed");
-      setSetupStep("microphone");
-      setMessage("Camera access granted. Next: allow microphone.");
+      setCameraSnapshots([]);
+      setCameraIdentityVerified(false);
+      setCameraPoseGuideIdx(0);
+      setCameraVerificationHint("");
+      setSetupStep("camera");
+      setMessage("Camera access granted. Capture 2 verification photos to continue.");
       logSecurityEvent("Camera verification passed.", "camera_check_passed", "info");
     } catch {
       setCheckState("failed");
@@ -969,8 +1188,13 @@ export default function InterviewLauncher({
       attachUserStreamToVideo(combined);
       setMicOn(true);
       setCheckState("passed");
-      setSetupStep("screen");
-      setMessage("Microphone access granted. Next: allow screen share.");
+      setMicIdentityVerified(false);
+      setMicVerificationTranscript("");
+      setMicVerificationError("");
+      setMicVerificationScore(0);
+      setSetupStep("microphone");
+      setMessage("Microphone access granted. Read the phrase aloud to verify voice.");
+      await startMicLevelMonitor();
       logSecurityEvent("Microphone verification passed.", "microphone_check_passed", "info");
     } catch {
       setCheckState("failed");
@@ -1019,11 +1243,152 @@ export default function InterviewLauncher({
       setMessage("Browser does not support media permission checks.");
       return;
     }
-    if (setupStep === "camera") return verifyCameraStep();
-    if (setupStep === "microphone") return verifyMicrophoneStep();
+    if (setupStep === "camera") {
+      if (!cameraOn) return verifyCameraStep();
+      if (!cameraIdentityVerified) return captureCameraVerificationPhoto();
+      setSetupStep("microphone");
+      return;
+    }
+    if (setupStep === "microphone") {
+      if (!micOn) return verifyMicrophoneStep();
+      if (!micIdentityVerified) return startMicVerification();
+      setSetupStep("screen");
+      return;
+    }
     if (setupStep === "screen") return verifyScreenStep();
     setCheckState("passed");
     setMessage("All setup steps completed.");
+  }
+
+  async function captureCameraVerificationPhoto() {
+    if (!userVideoRef.current || !cameraOn) {
+      setMessage("Enable camera first.");
+      return;
+    }
+    const video = userVideoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      setMessage("Camera is warming up. Please wait a moment and capture again.");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      setMessage("Unable to capture photo right now.");
+      return;
+    }
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (faceDetectorRef.current) {
+      try {
+        const detected = await faceDetectorRef.current.detect(canvas);
+        const validFaces = (detected || []).filter((f) => {
+          const w = Number(f.boundingBox?.width || 0);
+          const h = Number(f.boundingBox?.height || 0);
+          return w > 12 && h > 12;
+        });
+        if (validFaces.length > 1 || (validFaces.length === 1 && multipleFaces)) {
+          setCameraVerificationHint("Multiple faces detected. Only one face should be visible.");
+          setMessage("Multiple faces detected. Please keep only your face in frame.");
+          logSecurityEvent("Multiple faces detected during camera verification photo.", "multiple_faces_detected", "high");
+          return;
+        }
+        if (validFaces.length < 1) {
+          setCameraVerificationHint("No clear face detected. Center your face and capture again.");
+          setMessage("No clear face detected. Please look at camera and capture again.");
+          return;
+        }
+      } catch {
+        // fallback to runtime face flags below
+      }
+    } else if (multipleFaces) {
+      setCameraVerificationHint("Multiple faces detected in camera stream.");
+      setMessage("Multiple faces detected. Please keep only one person in frame.");
+      return;
+    }
+    const shot = canvas.toDataURL("image/jpeg", 0.85);
+    setCameraCaptureFlash(true);
+    window.setTimeout(() => setCameraCaptureFlash(false), 180);
+
+    const prev = cameraSnapshots[cameraSnapshots.length - 1];
+    if (prev) {
+      const diffScore = await snapshotDifferenceScore(prev, shot);
+      if (diffScore < 5.8) {
+        setCameraVerificationHint("Second photo is too similar. Change pose/angle slightly and capture again.");
+        setMessage("Please change your face angle and capture again.");
+        return;
+      }
+    }
+
+    setCameraSnapshots((curr) => {
+      const next = [...curr, shot].slice(0, CAMERA_VERIFICATION_PHOTO_COUNT);
+      setCameraPoseGuideIdx(Math.min(next.length, CAMERA_VERIFICATION_PHOTO_COUNT - 1));
+      setCameraVerificationHint("");
+      if (next.length >= CAMERA_VERIFICATION_PHOTO_COUNT) {
+        setCameraIdentityVerified(true);
+        setSetupStep("microphone");
+        setMessage("Camera identity check completed. Proceed to microphone verification.");
+        logSecurityEvent("Camera identity verification completed with two snapshots.", "camera_identity_verified", "info");
+      } else {
+        setMessage(`Photo ${next.length}/${CAMERA_VERIFICATION_PHOTO_COUNT} captured. Now: ${CAMERA_POSE_GUIDES[1]}`);
+      }
+      return next;
+    });
+  }
+
+  function retakeCameraVerification() {
+    setCameraSnapshots([]);
+    setCameraIdentityVerified(false);
+    setCameraPoseGuideIdx(0);
+    setCameraVerificationHint("");
+    setSetupStep("camera");
+    setMessage("Camera snapshots cleared. Capture two photos again.");
+  }
+
+  function startMicVerification() {
+    if (micVerificationInProgress) return;
+    if (!micOn) {
+      setMessage("Enable microphone first.");
+      return;
+    }
+    const rec = buildRecognition();
+    if (!rec) {
+      setMicVerificationError("Speech recognition not supported. Use Chrome.");
+      return;
+    }
+    setMicVerificationInProgress(true);
+    setMicVerificationError("");
+    setMicVerificationTranscript("");
+    setMicVerificationScore(0);
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.onresult = (event) => {
+      const transcript = event.results?.[0]?.[0]?.transcript?.trim() || "";
+      setMicVerificationTranscript(transcript);
+      const score = speechMatchScore(micVerificationPhrase, transcript);
+      setMicVerificationScore(score);
+      if (score >= 0.65) {
+        setMicIdentityVerified(true);
+        setSetupStep("screen");
+        setMessage("Microphone voice verification passed. Proceed to screen share.");
+        logSecurityEvent("Microphone voice phrase verified.", "microphone_phrase_verified", "info", { score: Number(score.toFixed(2)) });
+      } else {
+        setMicIdentityVerified(false);
+        setMicVerificationError(`Verification mismatch (${Math.round(score * 100)}%). Read clearly and try again.`);
+        logSecurityEvent("Microphone voice phrase mismatch.", "microphone_phrase_mismatch", "medium", { score: Number(score.toFixed(2)) });
+      }
+    };
+    rec.onerror = (event) => {
+      setMicVerificationError(`Voice verification failed: ${event.error}`);
+      setMicIdentityVerified(false);
+      setMicVerificationInProgress(false);
+      logSecurityEvent(`Microphone verification speech error: ${event.error}`, "microphone_phrase_error", "medium");
+    };
+    rec.onend = () => {
+      setMicVerificationInProgress(false);
+    };
+    rec.start();
   }
 
   async function startInterview() {
@@ -1115,6 +1480,27 @@ export default function InterviewLauncher({
     await fetchNextQuestion(updated);
   }
 
+  async function finalizeSpeechAnswer() {
+    if (speechSubmittedRef.current) return;
+    speechSubmittedRef.current = true;
+    clearSpeechSilenceTimer();
+    const transcript = speechBufferRef.current.trim();
+    speechBufferRef.current = "";
+    if (!transcript) {
+      setMessage("No speech detected. Please try again.");
+      return;
+    }
+    await submitAnswer(transcript, "speech");
+  }
+
+  function scheduleSpeechFinalize() {
+    clearSpeechSilenceTimer();
+    speechSilenceTimerRef.current = window.setTimeout(() => {
+      recognitionRef.current?.stop();
+      void finalizeSpeechAnswer();
+    }, 2600);
+  }
+
   function startListening() {
     if (listening) return;
     setMessage("");
@@ -1123,20 +1509,44 @@ export default function InterviewLauncher({
       setMessage("Speech recognition is not supported in this browser. Please use Chrome.");
       return;
     }
+    speechSubmittedRef.current = false;
+    speechBufferRef.current = "";
+    clearSpeechSilenceTimer();
+    setAnswerDraft("");
+    rec.interimResults = true;
+    rec.continuous = true;
     recognitionRef.current = rec;
     setListening(true);
     noSpeechRetryRef.current = 0;
 
     rec.onresult = async (event) => {
-      const transcript = event.results?.[0]?.[0]?.transcript?.trim();
-      if (!transcript) {
-        setMessage("No speech detected. Please try again.");
-        return;
+      let finalChunk = "";
+      let interimChunk = "";
+      const eventWithIndex = event as {
+        resultIndex?: number;
+        results: ArrayLike<{ [index: number]: { transcript: string }; isFinal?: boolean }>;
+      };
+      const startAt = typeof eventWithIndex.resultIndex === "number" ? eventWithIndex.resultIndex : 0;
+      const total = eventWithIndex.results?.length || 0;
+      for (let i = startAt; i < total; i += 1) {
+        const result = eventWithIndex.results?.[i];
+        const text = result?.[0]?.transcript?.trim() || "";
+        if (!text) continue;
+        if (result?.isFinal) {
+          finalChunk += `${text} `;
+        } else {
+          interimChunk = text;
+        }
       }
-      await submitAnswer(transcript, "speech");
+      if (finalChunk.trim()) {
+        speechBufferRef.current = `${speechBufferRef.current} ${finalChunk}`.trim();
+      }
+      setAnswerDraft(`${speechBufferRef.current} ${interimChunk}`.trim());
+      scheduleSpeechFinalize();
     };
 
     rec.onerror = (event) => {
+      clearSpeechSilenceTimer();
       if (event.error === "no-speech" && noSpeechRetryRef.current < 1) {
         noSpeechRetryRef.current += 1;
         setMessage("No speech detected. Auto-retrying once...");
@@ -1152,13 +1562,22 @@ export default function InterviewLauncher({
       setListening(false);
     };
 
-    rec.onend = () => setListening(false);
+    rec.onend = () => {
+      setListening(false);
+      if (!speechSubmittedRef.current && speechBufferRef.current.trim()) {
+        void finalizeSpeechAnswer();
+      }
+    };
     rec.start();
   }
 
   function stopListening() {
+    clearSpeechSilenceTimer();
     recognitionRef.current?.stop();
     setListening(false);
+    if (!speechSubmittedRef.current && speechBufferRef.current.trim()) {
+      void finalizeSpeechAnswer();
+    }
   }
 
   async function ensureCameraStream() {
@@ -1369,8 +1788,8 @@ export default function InterviewLauncher({
                 { step: "ready", label: "System Ready", num: 4 }
               ].map((item, idx) => {
                 const isPassed = 
-                  (item.step === "camera" && cameraOn) || 
-                  (item.step === "microphone" && micOn) || 
+                  (item.step === "camera" && cameraOn && cameraIdentityVerified) || 
+                  (item.step === "microphone" && micOn && micIdentityVerified) || 
                   (item.step === "screen" && sharingScreen) ||
                   (item.step === "ready" && setupStep === "ready");
                 const isActive = setupStep === item.step;
@@ -1410,6 +1829,7 @@ export default function InterviewLauncher({
                   playsInline 
                   className={`h-full w-full object-cover transition-opacity duration-500 ${cameraOn ? "opacity-100 scale-100" : "opacity-0 scale-95"}`} 
                 />
+                {cameraCaptureFlash && <div className="absolute inset-0 bg-white/60 animate-pulse pointer-events-none" />}
 
                 {/* Cyber HUD Overlay when Camera Active */}
                 {cameraOn && (
@@ -1486,14 +1906,14 @@ export default function InterviewLauncher({
                     step: "camera",
                     title: "Step 1: Face Compliance Scan",
                     desc: "Verify identity and secure environment via high-res video channel.",
-                    status: cameraOn ? "Passed" : setupStep === "camera" ? "Verifying" : "Pending",
+                    status: cameraOn && cameraIdentityVerified ? "Passed" : setupStep === "camera" ? "Verifying" : "Pending",
                     icon: Camera
                   },
                   {
                     step: "microphone",
                     title: "Step 2: Microphone Calibration",
                     desc: "Calibrate voice parameters for conversational analysis.",
-                    status: micOn ? "Passed" : setupStep === "microphone" ? "Verifying" : "Pending",
+                    status: micOn && micIdentityVerified ? "Passed" : setupStep === "microphone" ? "Verifying" : "Pending",
                     icon: Mic
                   },
                   {
@@ -1583,9 +2003,9 @@ export default function InterviewLauncher({
                         {setupStep === "ready" && <CheckCircle className="h-4 w-4 text-emerald-400" />}
                         <span>
                           {setupStep === "camera" 
-                            ? "Allow Camera Access" 
+                            ? (!cameraOn ? "Allow Camera Access" : !cameraIdentityVerified ? `Capture Photo (${cameraSnapshots.length}/${CAMERA_VERIFICATION_PHOTO_COUNT})` : "Camera Verified")
                             : setupStep === "microphone" 
-                              ? "Allow Microphone Feed" 
+                              ? (!micOn ? "Allow Microphone Feed" : !micIdentityVerified ? (micVerificationInProgress ? "Listening..." : "Verify Voice Phrase") : "Microphone Verified")
                               : setupStep === "screen" 
                                 ? "Initiate Screen Share" 
                                 : "System Hardware Verified"}
@@ -1604,6 +2024,94 @@ export default function InterviewLauncher({
                     <ArrowRight className="h-4 w-4" />
                   </button>
                 </div>
+
+                {setupStep === "camera" && cameraOn && (
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.03] p-3 text-xs text-slate-300">
+                    <p className="font-semibold text-indigo-300">Camera Identity Check</p>
+                    <p className="mt-1 text-slate-400">Capture {CAMERA_VERIFICATION_PHOTO_COUNT} photos to confirm a live candidate.</p>
+                    <p className="mt-1 rounded-md border border-white/10 bg-black/20 px-2 py-1.5 text-[11px] text-amber-300">
+                      Guidance: {CAMERA_POSE_GUIDES[cameraPoseGuideIdx]}
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      {Array.from({ length: CAMERA_VERIFICATION_PHOTO_COUNT }).map((_, idx) => (
+                        <div key={idx} className="h-16 w-24 overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                          {cameraSnapshots[idx] ? (
+                            <img src={cameraSnapshots[idx]} alt={`Verification ${idx + 1}`} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-500">Photo {idx + 1}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void captureCameraVerificationPhoto()}
+                        disabled={cameraSnapshots.length >= CAMERA_VERIFICATION_PHOTO_COUNT}
+                        className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-indigo-300 disabled:opacity-40"
+                      >
+                        Capture Photo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={retakeCameraVerification}
+                        className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300"
+                      >
+                        Retake
+                      </button>
+                      {cameraIdentityVerified && <span className="text-emerald-400 text-[11px] font-semibold">Verified</span>}
+                    </div>
+                    {cameraVerificationHint && <p className="mt-1 text-[11px] text-rose-400">{cameraVerificationHint}</p>}
+                  </div>
+                )}
+
+                {setupStep === "microphone" && micOn && (
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.03] p-3 text-xs text-slate-300">
+                    <p className="font-semibold text-indigo-300">Microphone Voice Verification</p>
+                    <p className="mt-1 text-slate-400">Read this phrase exactly:</p>
+                    <p className="mt-1 rounded-md border border-white/10 bg-black/20 px-2.5 py-2 text-[12px] text-slate-200">
+                      "{micVerificationPhrase}"
+                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={startMicVerification}
+                        disabled={micVerificationInProgress}
+                        className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-indigo-300 disabled:opacity-40"
+                      >
+                        {micVerificationInProgress ? "Listening..." : "Start Voice Check"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={nextMicPhrase}
+                        className="rounded-lg border border-white/20 bg-white/5 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300"
+                      >
+                        New Phrase
+                      </button>
+                      {micIdentityVerified && <span className="text-emerald-400 text-[11px] font-semibold">Verified</span>}
+                    </div>
+                    <div className="mt-2">
+                      <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Mic Input Level</span>
+                        <span>{Math.round(micLevel)}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/10">
+                        <div className="h-1.5 rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 transition-all" style={{ width: `${Math.max(2, micLevel)}%` }} />
+                      </div>
+                    </div>
+                    {micVerificationTranscript && (
+                      <p className="mt-2 text-[11px] text-slate-400">You said: "{micVerificationTranscript}"</p>
+                    )}
+                    {micVerificationScore > 0 && (
+                      <p className={`mt-1 text-[11px] ${micVerificationScore >= 0.65 ? "text-emerald-400" : "text-amber-400"}`}>
+                        Phrase match score: {Math.round(micVerificationScore * 100)}%
+                      </p>
+                    )}
+                    {micVerificationError && (
+                      <p className="mt-1 text-[11px] text-rose-400">{micVerificationError}</p>
+                    )}
+                  </div>
+                )}
 
                 {/* Error/Notice dynamic panel */}
                 {startBlockReason && (
@@ -1846,7 +2354,7 @@ export default function InterviewLauncher({
                 </div>
 
                 {/* SECURITY VIOLATION BANNERS */}
-                {(faceViolationCountdown !== null || securityCountdown !== null || tabCountdown !== null) && (
+                {(faceViolationCountdown !== null || securityCountdown !== null || tabCountdown !== null || screenViolationCountdown !== null) && (
                   <div className="absolute inset-x-0 top-0 z-50">
                     {faceViolationCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-orange-600/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
@@ -1864,6 +2372,12 @@ export default function InterviewLauncher({
                       <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">🚨</span>
                         <span>TAB SWITCH DETECTED — Return to interview in {tabCountdown}s or interview terminates</span>
+                      </div>
+                    )}
+                    {screenViolationCountdown !== null && (
+                      <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
+                        <span className="animate-pulse text-lg">🚨</span>
+                        <span>SCREEN SWITCHING DETECTED — Return to a stable screen in {screenViolationCountdown}s or interview terminates</span>
                       </div>
                     )}
                   </div>
@@ -1900,6 +2414,7 @@ export default function InterviewLauncher({
                     { label: "Camera Active", ok: cameraOn, icon: "📷" },
                     { label: "Microphone Active", ok: micOn, icon: "🎤" },
                     { label: "Screen Sharing", ok: sharingScreen, icon: "🖥" },
+                    { label: "Screen Stability", ok: screenViolationCountdown === null, icon: "🧭" },
                     { label: "Internet Stable", ok: internetQuality === "good", icon: "🌐" },
                     { label: "Tab Focus", ok: tabCountdown === null, icon: "🖱" },
                   ].map(({ label, ok, icon }) => (
@@ -1932,33 +2447,6 @@ export default function InterviewLauncher({
                 {showQuestionDetails && (
                   <p className="mt-2 text-xs text-slate-400 bg-[#0a0a12] border border-white/5 rounded-lg p-3">AI-generated from your resume context. Expects depth, trade-offs, and real examples.</p>
                 )}
-              </div>
-
-              {/* AI Scoring */}
-              <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">
-                <h3 className="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-4">Live Scoring</h3>
-                <div className="space-y-3">
-                  {[
-                    { label: "Communication", score: liveScores.communication, color: "from-blue-500 to-indigo-500" },
-                    { label: "Confidence", score: liveScores.confidence, color: "from-violet-500 to-purple-500" },
-                    { label: "Technical Depth", score: liveScores.technical, color: "from-indigo-400 to-cyan-500" },
-                    { label: "Authenticity", score: liveScores.authenticity, color: "from-amber-500 to-orange-500" },
-                  ].map(({ label, score, color }) => (
-                    <div key={label}>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-slate-400">{label}</span>
-                        <span className={`font-semibold ${score >= 7 ? "text-emerald-400" : score >= 5 ? "text-amber-400" : score > 0 ? "text-rose-400" : "text-slate-500"}`}>
-                          {score > 0 ? `${score.toFixed(1)}/10` : "–"}
-                        </span>
-                      </div>
-                      <div className="h-2 rounded-full bg-white/10">
-                        <div className={`h-2 rounded-full bg-gradient-to-r ${color} transition-all duration-700`} style={{ width: score > 0 ? `${score * 10}%` : "0%" }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                {lastAnalysis && <p className="mt-3 text-xs text-emerald-400 bg-emerald-900/20 rounded-lg p-3 border border-emerald-500/30 leading-relaxed">{lastAnalysis}</p>}
-                {liveScores.communication === 0 && <p className="mt-2 text-xs text-slate-500 text-center">Scores update after each answer</p>}
               </div>
 
               {/* Voice Control */}

@@ -731,25 +731,39 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
             "skills": candidate.skills if candidate else "",
             "resume_context": resume_json.get("data", {}).get("raw_text_preview", "")[:500] if resume_json else "",
         }
-        raw_analysis, score = analyze_candidate_answer(
-            content,
-            job.title if job else "Software Engineer",
-            candidate_info=candidate_info,
-            full_history=history,
-        )
-        # Parse per-category scores if the analysis string is JSON
-        try:
-            if raw_analysis.strip().startswith("{"):
-                parsed_eval = _json.loads(raw_analysis)
-                confidence_score = float(parsed_eval.get("confidence_score", 0.0))
-                communication_score = float(parsed_eval.get("communication_score", 0.0))
-                technical_depth_score = float(parsed_eval.get("technical_depth_score", 0.0))
-                authenticity_score = float(parsed_eval.get("authenticity_score", 0.0))
-                analysis = str(parsed_eval.get("analysis", "")).strip() or raw_analysis
+        # Keep live interviews snappy; run lightweight scoring while in_progress.
+        if interview_row.status == "in_progress":
+            wc = len(content.split())
+            if wc < 8:
+                analysis, score = "Answer captured. Please expand with more specifics.", 4.0
+            elif wc < 20:
+                analysis, score = "Answer captured. Good start; add concrete steps and outcomes.", 5.8
             else:
+                analysis, score = "Answer captured for recruiter review.", 6.8
+            confidence_score = max(0.0, min(10.0, round(score - 0.4, 2)))
+            communication_score = max(0.0, min(10.0, round(score, 2)))
+            technical_depth_score = max(0.0, min(10.0, round(score - 0.2, 2)))
+            authenticity_score = max(0.0, min(10.0, round(score - 0.1, 2)))
+        else:
+            raw_analysis, score = analyze_candidate_answer(
+                content,
+                job.title if job else "Software Engineer",
+                candidate_info=candidate_info,
+                full_history=history,
+            )
+            # Parse per-category scores if the analysis string is JSON
+            try:
+                if raw_analysis.strip().startswith("{"):
+                    parsed_eval = _json.loads(raw_analysis)
+                    confidence_score = float(parsed_eval.get("confidence_score", 0.0))
+                    communication_score = float(parsed_eval.get("communication_score", 0.0))
+                    technical_depth_score = float(parsed_eval.get("technical_depth_score", 0.0))
+                    authenticity_score = float(parsed_eval.get("authenticity_score", 0.0))
+                    analysis = str(parsed_eval.get("analysis", "")).strip() or raw_analysis
+                else:
+                    analysis = raw_analysis
+            except Exception:
                 analysis = raw_analysis
-        except Exception:
-            analysis = raw_analysis
 
     turn = InterviewTurnLog(
         interview_id=interview_id,
