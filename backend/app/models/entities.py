@@ -42,6 +42,7 @@ class InterviewSession(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="scheduled")
     integrity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_level: Mapped[str] = mapped_column(String(32), default="low")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -69,6 +70,7 @@ class InterviewTurnLog(Base):
         UUID(as_uuid=True), ForeignKey("interview_sessions.id"), nullable=False
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # assistant | candidate
+    source: Mapped[str] = mapped_column(String(32), default="speech")
     content: Mapped[str] = mapped_column(Text, nullable=False)
     analysis: Mapped[str] = mapped_column(Text, default="")
     score: Mapped[float] = mapped_column(Float, default=0.0)
@@ -78,3 +80,16 @@ class InterviewTurnLog(Base):
     authenticity_score: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+
+class InterviewSecurityEvent(Base):
+    __tablename__ = "interview_security_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interview_sessions.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), default="medium")
+    details: Mapped[str] = mapped_column(Text, default="")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

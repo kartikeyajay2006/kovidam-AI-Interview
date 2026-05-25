@@ -1,5 +1,6 @@
 import DashboardControls from "../../components/recruiter/dashboard-controls";
 import CandidatesTable from "../../components/recruiter/candidates-table";
+import InterviewReviewPanel from "../../components/recruiter/interview-review-panel";
 
 type DashboardStats = {
   total_jobs: number;
@@ -107,6 +108,7 @@ export default async function DashboardPage() {
         <DashboardControls jobs={jobs.map((j) => ({ id: j.id, title: j.title }))} />
 
         <CandidatesTable candidates={candidates} />
+        <InterviewReviewPanel />
       </div>
     </main>
   );

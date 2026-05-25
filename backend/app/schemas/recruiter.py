@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -71,6 +72,7 @@ class InterviewOut(BaseModel):
     job_id: UUID
     status: str
     integrity_score: float
+    risk_level: str
 
 
 class InterviewDetail(BaseModel):
@@ -85,6 +87,7 @@ class InterviewDetail(BaseModel):
     job_interview_type: str
     status: str
     integrity_score: float
+    risk_level: str
     candidate_skills: str
     parsed_resume_json: dict
 
@@ -135,6 +138,7 @@ class InterviewQuestionResponse(BaseModel):
 class InterviewTurnCreate(BaseModel):
     role: str
     content: str
+    source: str = "speech"
 
 
 class InterviewTurnOut(BaseModel):
@@ -143,6 +147,7 @@ class InterviewTurnOut(BaseModel):
     id: UUID
     interview_id: UUID
     role: str
+    source: str
     content: str
     analysis: str
     score: float
@@ -150,3 +155,62 @@ class InterviewTurnOut(BaseModel):
     communication_score: float = 0.0
     technical_depth_score: float = 0.0
     authenticity_score: float = 0.0
+
+
+class InterviewSecurityEventCreate(BaseModel):
+    event_type: str = Field(min_length=2)
+    severity: str = "medium"
+    details: str = ""
+    evidence: dict = Field(default_factory=dict)
+
+
+class InterviewSecurityEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    interview_id: UUID
+    event_type: str
+    severity: str
+    details: str
+    evidence_json: str
+    created_at: datetime
+
+
+class InterviewReviewFeedItem(BaseModel):
+    interview_id: UUID
+    candidate_name: str
+    candidate_email: str
+    job_title: str
+    status: str
+    integrity_score: float
+    risk_level: str
+    turns_count: int
+    security_events_count: int
+    created_at: datetime
+
+
+class InterviewAnswerReview(BaseModel):
+    content: str
+    analysis: str
+    score: float
+    source: str
+    created_at: datetime
+
+
+class InterviewQuestionReview(BaseModel):
+    question: str
+    answers: list[InterviewAnswerReview]
+    asked_at: datetime | None = None
+
+
+class InterviewReviewPacket(BaseModel):
+    interview_id: UUID
+    candidate_name: str
+    candidate_email: str
+    job_title: str
+    status: str
+    integrity_score: float
+    risk_level: str
+    transcript: list[InterviewTurnOut]
+    qna_pairs: list[InterviewQuestionReview]
+    security_events: list[InterviewSecurityEventOut]

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.entities import Candidate, InterviewSession, InterviewTurnLog, Job, Resume
+from app.models.entities import Candidate, InterviewSecurityEvent, InterviewSession, InterviewTurnLog, Job, Resume
 from app.schemas.recruiter import (
     BulkInviteResponse,
     CandidateCreate,
@@ -18,6 +18,12 @@ from app.schemas.recruiter import (
     InterviewOut,
     InterviewQuestionRequest,
     InterviewQuestionResponse,
+    InterviewReviewFeedItem,
+    InterviewReviewPacket,
+    InterviewSecurityEventCreate,
+    InterviewSecurityEventOut,
+    InterviewQuestionReview,
+    InterviewAnswerReview,
     InterviewTurn,
     InterviewTurnCreate,
     InterviewTurnOut,
@@ -160,6 +166,54 @@ def _parse_job_questions(question_bank: str | None) -> list[dict]:
     return bank
 
 
+def _normalize_severity(value: str) -> str:
+    cleaned = (value or "medium").strip().lower()
+    if cleaned in {"info", "low", "medium", "high", "critical"}:
+        return cleaned
+    return "medium"
+
+
+def _event_penalty(event_type: str, severity: str) -> float:
+    severity_weight = {
+        "info": 0.15,
+        "low": 0.35,
+        "medium": 0.8,
+        "high": 1.4,
+        "critical": 2.4,
+    }
+    event_weight = {
+        "tab_hidden": 1.2,
+        "tab_hidden_timeout": 2.5,
+        "screen_share_stopped": 2.3,
+        "camera_unavailable": 2.0,
+        "microphone_unavailable": 1.8,
+        "face_not_visible": 1.8,
+        "multiple_faces_detected": 2.2,
+        "screen_change_detected": 0.9,
+        "network_unstable": 0.6,
+    }
+    return severity_weight.get(severity, 0.8) * event_weight.get(event_type, 0.7)
+
+
+def _recalculate_interview_integrity(db: Session, interview: InterviewSession) -> None:
+    events = db.execute(
+        select(InterviewSecurityEvent).where(InterviewSecurityEvent.interview_id == interview.id)
+    ).scalars().all()
+    total_penalty = 0.0
+    for event in events:
+        total_penalty += _event_penalty(event.event_type, event.severity)
+    integrity = max(0.0, 100.0 - (total_penalty * 8.0))
+    interview.integrity_score = round(integrity, 2)
+    if integrity >= 85:
+        interview.risk_level = "low"
+    elif integrity >= 65:
+        interview.risk_level = "medium"
+    elif integrity >= 45:
+        interview.risk_level = "high"
+    else:
+        interview.risk_level = "critical"
+
+
 def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple[bool, str]:
     target_email = candidate.email.strip()
     if not is_deliverable_email(target_email):
@@ -173,7 +227,13 @@ def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple
         else:
             return False, f"{candidate.name}: invalid recipient email"
 
-    interview = InterviewSession(candidate_id=candidate.id, job_id=job.id, status="scheduled")
+    interview = InterviewSession(
+        candidate_id=candidate.id,
+        job_id=job.id,
+        status="scheduled",
+        integrity_score=100.0,
+        risk_level="low",
+    )
     db.add(interview)
     db.commit()
     db.refresh(interview)
@@ -263,6 +323,7 @@ def delete_candidate(candidate_id: UUID, db: Session = Depends(get_db)):
         select(InterviewSession.id).where(InterviewSession.candidate_id == candidate_id)
     ).scalars().all()
     if interview_ids:
+        db.execute(delete(InterviewSecurityEvent).where(InterviewSecurityEvent.interview_id.in_(interview_ids)))
         db.execute(delete(InterviewTurnLog).where(InterviewTurnLog.interview_id.in_(interview_ids)))
         db.execute(delete(InterviewSession).where(InterviewSession.id.in_(interview_ids)))
 
@@ -321,7 +382,7 @@ def create_interview(payload: InterviewCreate, db: Session = Depends(get_db)):
     if not job_exists:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    interview = InterviewSession(**payload.model_dump())
+    interview = InterviewSession(**payload.model_dump(), integrity_score=100.0, risk_level="low")
     db.add(interview)
     db.commit()
     db.refresh(interview)
@@ -332,6 +393,147 @@ def create_interview(payload: InterviewCreate, db: Session = Depends(get_db)):
 def list_interviews(db: Session = Depends(get_db)):
     interviews = db.execute(select(InterviewSession).order_by(InterviewSession.created_at.desc())).scalars().all()
     return list(interviews)
+
+
+@router.delete("/interviews/{interview_id}")
+def delete_interview(interview_id: UUID, db: Session = Depends(get_db)):
+    interview = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    db.execute(delete(InterviewSecurityEvent).where(InterviewSecurityEvent.interview_id == interview_id))
+    db.execute(delete(InterviewTurnLog).where(InterviewTurnLog.interview_id == interview_id))
+    db.execute(delete(InterviewSession).where(InterviewSession.id == interview_id))
+    db.commit()
+    return {"deleted": True, "interview_id": str(interview_id)}
+
+
+@router.get("/interviews/review-feed", response_model=list[InterviewReviewFeedItem])
+def interview_review_feed(limit: int = 30, db: Session = Depends(get_db)):
+    safe_limit = max(1, min(limit, 100))
+    rows = db.execute(
+        select(InterviewSession, Candidate, Job)
+        .join(Candidate, Candidate.id == InterviewSession.candidate_id)
+        .join(Job, Job.id == InterviewSession.job_id)
+        .order_by(InterviewSession.created_at.desc())
+        .limit(safe_limit)
+    ).all()
+
+    feed: list[InterviewReviewFeedItem] = []
+    for interview, candidate, job in rows:
+        turns_count = db.execute(
+            select(func.count())
+            .select_from(InterviewTurnLog)
+            .where(InterviewTurnLog.interview_id == interview.id)
+        ).scalar_one()
+        security_events_count = db.execute(
+            select(func.count())
+            .select_from(InterviewSecurityEvent)
+            .where(InterviewSecurityEvent.interview_id == interview.id)
+        ).scalar_one()
+        # Backfill display values for old sessions created before integrity scoring.
+        if interview.integrity_score <= 0 and security_events_count == 0:
+            interview.integrity_score = 100.0
+            interview.risk_level = "low"
+            db.commit()
+            db.refresh(interview)
+        feed.append(
+            InterviewReviewFeedItem(
+                interview_id=interview.id,
+                candidate_name=candidate.name,
+                candidate_email=candidate.email,
+                job_title=job.title,
+                status=interview.status,
+                integrity_score=interview.integrity_score,
+                risk_level=interview.risk_level,
+                turns_count=turns_count,
+                security_events_count=security_events_count,
+                created_at=interview.created_at,
+            )
+        )
+    return feed
+
+
+@router.get("/interviews/{interview_id}/review-packet", response_model=InterviewReviewPacket)
+def interview_review_packet(interview_id: UUID, db: Session = Depends(get_db)):
+    row = db.execute(
+        select(InterviewSession, Candidate, Job)
+        .join(Candidate, Candidate.id == InterviewSession.candidate_id)
+        .join(Job, Job.id == InterviewSession.job_id)
+        .where(InterviewSession.id == interview_id)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    interview, candidate, job = row
+    turns = db.execute(
+        select(InterviewTurnLog)
+        .where(InterviewTurnLog.interview_id == interview_id)
+        .order_by(InterviewTurnLog.created_at.asc())
+    ).scalars().all()
+    security_events = db.execute(
+        select(InterviewSecurityEvent)
+        .where(InterviewSecurityEvent.interview_id == interview_id)
+        .order_by(InterviewSecurityEvent.created_at.asc())
+    ).scalars().all()
+
+    qna_pairs: list[InterviewQuestionReview] = []
+    current_q_idx = -1
+    for turn in turns:
+        if turn.role == "assistant":
+            qna_pairs.append(
+                InterviewQuestionReview(
+                    question=turn.content,
+                    asked_at=turn.created_at,
+                    answers=[],
+                )
+            )
+            current_q_idx += 1
+            continue
+        if turn.role != "candidate":
+            continue
+        if current_q_idx < 0:
+            qna_pairs.append(InterviewQuestionReview(question="", answers=[]))
+            current_q_idx = 0
+        qna_pairs[current_q_idx].answers.append(
+            InterviewAnswerReview(
+                content=turn.content,
+                analysis=turn.analysis,
+                score=turn.score,
+                source=turn.source,
+                created_at=turn.created_at,
+            )
+        )
+
+    transcript = [
+        InterviewTurnOut(
+            id=t.id,
+            interview_id=t.interview_id,
+            role=t.role,
+            source=t.source,
+            content=t.content,
+            analysis=t.analysis,
+            score=t.score,
+            confidence_score=t.confidence_score,
+            communication_score=t.communication_score,
+            technical_depth_score=t.technical_depth_score,
+            authenticity_score=t.authenticity_score,
+        )
+        for t in turns
+    ]
+
+    return InterviewReviewPacket(
+        interview_id=interview.id,
+        candidate_name=candidate.name,
+        candidate_email=candidate.email,
+        job_title=job.title,
+        status=interview.status,
+        integrity_score=interview.integrity_score,
+        risk_level=interview.risk_level,
+        transcript=transcript,
+        qna_pairs=qna_pairs,
+        security_events=security_events,
+    )
 
 
 @router.get("/interviews/{interview_id}", response_model=InterviewDetail)
@@ -363,6 +565,7 @@ def get_interview(interview_id: UUID, db: Session = Depends(get_db)):
         job_interview_type=job.interview_type,
         status=interview.status,
         integrity_score=interview.integrity_score,
+        risk_level=interview.risk_level,
         candidate_skills=candidate.skills,
         parsed_resume_json=resume_json,
     )
@@ -378,6 +581,9 @@ def start_interview(interview_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Interview is already completed")
 
     interview.status = "in_progress"
+    if interview.integrity_score <= 0:
+        interview.integrity_score = 100.0
+        interview.risk_level = "low"
     db.commit()
     db.refresh(interview)
     return interview
@@ -457,6 +663,7 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         InterviewTurnLog(
             interview_id=interview_id,
             role="assistant",
+            source="system",
             content=question,
             analysis=rationale,
             score=0.0,
@@ -487,6 +694,12 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
     role = payload.role.strip().lower()
     if role not in {"assistant", "candidate"}:
         raise HTTPException(status_code=400, detail="Role must be assistant or candidate")
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Turn content cannot be empty")
+    source = (payload.source or "speech").strip().lower()
+    if source not in {"speech", "text", "system", "proctor"}:
+        source = "speech"
 
     analysis = ""
     score = 0.0
@@ -501,7 +714,7 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
             .order_by(InterviewTurnLog.created_at.asc())
         ).scalars().all()
         history = [{"role": t.role, "content": t.content} for t in turns]
-        history.append({"role": "candidate", "content": payload.content})
+        history.append({"role": "candidate", "content": content})
         try:
             resume_json = _json.loads(candidate.parsed_resume_json or "{}")
         except Exception:
@@ -512,7 +725,7 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
             "resume_context": resume_json.get("data", {}).get("raw_text_preview", "")[:500] if resume_json else "",
         }
         raw_analysis, score = analyze_candidate_answer(
-            payload.content,
+            content,
             job.title if job else "Software Engineer",
             candidate_info=candidate_info,
             full_history=history,
@@ -534,7 +747,8 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
     turn = InterviewTurnLog(
         interview_id=interview_id,
         role=role,
-        content=payload.content,
+        source=source,
+        content=content,
         analysis=analysis,
         score=score,
         confidence_score=confidence_score,
@@ -546,6 +760,38 @@ def add_interview_turn(interview_id: UUID, payload: InterviewTurnCreate, db: Ses
     db.commit()
     db.refresh(turn)
     return turn
+
+
+@router.get("/interviews/{interview_id}/security-events", response_model=list[InterviewSecurityEventOut])
+def list_security_events(interview_id: UUID, db: Session = Depends(get_db)):
+    events = db.execute(
+        select(InterviewSecurityEvent)
+        .where(InterviewSecurityEvent.interview_id == interview_id)
+        .order_by(InterviewSecurityEvent.created_at.asc())
+    ).scalars().all()
+    return list(events)
+
+
+@router.post("/interviews/{interview_id}/security-events", response_model=InterviewSecurityEventOut)
+def add_security_event(interview_id: UUID, payload: InterviewSecurityEventCreate, db: Session = Depends(get_db)):
+    import json as _json
+
+    interview = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+
+    event = InterviewSecurityEvent(
+        interview_id=interview_id,
+        event_type=payload.event_type.strip().lower(),
+        severity=_normalize_severity(payload.severity),
+        details=(payload.details or "").strip()[:1500],
+        evidence_json=_json.dumps(payload.evidence or {}),
+    )
+    db.add(event)
+    _recalculate_interview_integrity(db, interview)
+    db.commit()
+    db.refresh(event)
+    return event
 
 
 @router.get("/interviews/{interview_id}/qna-map")
@@ -568,7 +814,7 @@ def qna_map(interview_id: UUID, db: Session = Depends(get_db)):
                 current_q = {"question": "", "answers": []}
                 pairs.append(current_q)
             current_q["answers"].append(
-                {"content": turn.content, "analysis": turn.analysis, "score": turn.score}
+                {"content": turn.content, "analysis": turn.analysis, "score": turn.score, "source": turn.source}
             )
 
     return {"interview_id": str(interview_id), "qna_pairs": pairs}
@@ -588,14 +834,20 @@ def interview_state_trace(interview_id: UUID, db: Session = Depends(get_db)):
         {"question": t.content, "rationale": t.analysis, "created_at": t.created_at.isoformat()}
         for t in assistant_turns
     ]
+    security_count = db.execute(
+        select(func.count())
+        .select_from(InterviewSecurityEvent)
+        .where(InterviewSecurityEvent.interview_id == interview_id)
+    ).scalar_one()
+    session = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
     return {
         "interview_id": str(interview_id),
         "assistant_questions_count": len(assistant_turns),
         "candidate_answers_count": len(candidate_turns),
-        "status": (
-            db.execute(select(InterviewSession.status).where(InterviewSession.id == interview_id)).scalar_one_or_none()
-            or "unknown"
-        ),
+        "status": session.status if session else "unknown",
+        "integrity_score": session.integrity_score if session else 0.0,
+        "risk_level": session.risk_level if session else "unknown",
+        "security_events_count": security_count,
         "trace": trace,
     }
 

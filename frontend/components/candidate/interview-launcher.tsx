@@ -13,8 +13,15 @@ type Props = {
 };
 
 type CheckState = "idle" | "checking" | "passed" | "failed";
-type Turn = { role: "assistant" | "candidate"; content: string; analysis?: string; score?: number; confidence_score?: number; communication_score?: number; technical_depth_score?: number; authenticity_score?: number };
+type TurnSource = "speech" | "text" | "system" | "proctor";
+type Turn = { role: "assistant" | "candidate"; source?: TurnSource; content: string; analysis?: string; score?: number; confidence_score?: number; communication_score?: number; technical_depth_score?: number; authenticity_score?: number };
 type SetupStep = "camera" | "microphone" | "screen" | "ready";
+type SecurityEvent = {
+  time: string;
+  event: string;
+  eventType?: string;
+  severity?: "info" | "low" | "medium" | "high" | "critical";
+};
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -29,6 +36,8 @@ type SpeechRecognitionLike = {
 
 const PRIMARY_API = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy/api/v1";
 const FALLBACK_API = "http://127.0.0.1:8000/api/v1";
+const TURN_QUEUE_KEY_PREFIX = "kovi_turn_queue_";
+const SECURITY_QUEUE_KEY_PREFIX = "kovi_security_queue_";
 
 async function fetchWithFallback(path: string, init?: RequestInit): Promise<Response> {
   try {
@@ -85,10 +94,15 @@ export default function InterviewLauncher({
   const [multipleFaces, setMultipleFaces] = useState(false);
   const [faceViolationCountdown, setFaceViolationCountdown] = useState<number | null>(null);
   const [screenChanged, setScreenChanged] = useState(false);
-  const [securityEvents, setSecurityEvents] = useState<{time: string; event: string}[]>([]);
+  const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
+  const [answerDraft, setAnswerDraft] = useState("");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const noSpeechRetryRef = useRef(0);
+  const lastEventLoggedAtRef = useRef<Record<string, number>>({});
   const listeningRef = useRef(false);
+  const historyRef = useRef<Turn[]>([]);
+  const flushingTurnsRef = useRef(false);
+  const flushingSecurityRef = useRef(false);
   const tabTimerRef = useRef<number | null>(null);
   const faceTimerRef = useRef<number | null>(null);
   const faceCheckRef = useRef<number | null>(null);
@@ -96,7 +110,7 @@ export default function InterviewLauncher({
   const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const userStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
-  const prevScreenShotRef = useRef<string | null>(null);
+  const prevScreenPixelsRef = useRef<Uint8ClampedArray | null>(null);
   const screenCheckIntervalRef = useRef<number | null>(null);
 
   function attachUserStreamToVideo(stream: MediaStream | null) {
@@ -142,6 +156,10 @@ export default function InterviewLauncher({
   }, [listening]);
 
   useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  useEffect(() => {
     const onOnline = () => setInternetOnline(true);
     const onOffline = () => setInternetOnline(false);
     setInternetOnline(typeof navigator !== "undefined" ? navigator.onLine : true);
@@ -156,6 +174,7 @@ export default function InterviewLauncher({
   useEffect(() => {
     if (status === "in_progress") {
       void loadTurns();
+      void loadSecurityEvents();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, interviewId]);
@@ -198,6 +217,33 @@ export default function InterviewLauncher({
   }, []);
 
   useEffect(() => {
+    const id = window.setInterval(() => {
+      void flushQueuedTurns();
+      void flushQueuedSecurityEvents();
+    }, 5000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interviewId]);
+
+  useEffect(() => {
+    if (!internetOnline) return;
+    void flushQueuedTurns();
+    void flushQueuedSecurityEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [internetOnline]);
+
+  useEffect(() => {
+    if (status !== "in_progress") return;
+    if (internetQuality === "unstable") {
+      logSecurityEvent("Network became unstable during interview.", "network_unstable", "medium");
+    }
+    if (internetQuality === "offline") {
+      logSecurityEvent("Network disconnected during interview.", "network_offline", "high");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [internetQuality, status]);
+
+  useEffect(() => {
     if (status !== "in_progress" || cheatingTagged) return;
     const nonCompliant = !cameraOn || !micOn || !sharingScreen || internetQuality !== "good";
     if (!nonCompliant) {
@@ -207,6 +253,12 @@ export default function InterviewLauncher({
 
     stopListening();
     setMessage("Security alert: restore camera, microphone, screen share, and stable internet within 10 seconds.");
+    logSecurityEvent(
+      "Temporary compliance break detected (camera/mic/screen/internet).",
+      "compliance_break_started",
+      "medium",
+      { cameraOn, micOn, sharingScreen, internetQuality }
+    );
     setSecurityCountdown(10);
     const timer = window.setInterval(() => {
       setSecurityCountdown((prev) => {
@@ -214,7 +266,17 @@ export default function InterviewLauncher({
         if (prev <= 1) {
           window.clearInterval(timer);
           setCheatingTagged(true);
-          void saveTurn("assistant", "Cheating detected: required device/internet compliance broken for more than 10 seconds.");
+          logSecurityEvent(
+            "Cheating detected: required device/internet compliance broken for more than 10 seconds.",
+            "compliance_break_timeout",
+            "critical",
+            { cameraOn, micOn, sharingScreen, internetQuality }
+          );
+          void saveTurn(
+            "assistant",
+            "Cheating detected: required device/internet compliance broken for more than 10 seconds.",
+            "proctor"
+          );
           setMessage("Interview ended: Cheating detected due to compliance break >10 seconds.");
           void endInterview();
           return 0;
@@ -223,6 +285,7 @@ export default function InterviewLauncher({
       });
     }, 1000);
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, cheatingTagged, cameraOn, micOn, sharingScreen, internetQuality]);
 
   useEffect(() => {
@@ -239,6 +302,7 @@ export default function InterviewLauncher({
     function startTabTimer() {
       if (tabTimerRef.current) return;
       setTabCountdown(10);
+      logSecurityEvent("Candidate moved away from interview tab.", "tab_hidden", "high");
       tabTimerRef.current = window.setInterval(() => {
         setTabCountdown((prev) => {
           if (prev === null) return null;
@@ -248,7 +312,16 @@ export default function InterviewLauncher({
               tabTimerRef.current = null;
             }
             setCheatingTagged(true);
-            void saveTurn("assistant", "Cheating detected: candidate moved away from interview tab for more than 10 seconds.");
+            logSecurityEvent(
+              "Cheating detected: candidate moved away from interview tab for more than 10 seconds.",
+              "tab_hidden_timeout",
+              "critical"
+            );
+            void saveTurn(
+              "assistant",
+              "Cheating detected: candidate moved away from interview tab for more than 10 seconds.",
+              "proctor"
+            );
             setMessage("Interview ended: Cheating detected (tab switching >10 seconds).");
             void endInterview();
             return 0;
@@ -263,6 +336,7 @@ export default function InterviewLauncher({
         startTabTimer();
       } else {
         stopTabTimer();
+        logSecurityEvent("Candidate returned to interview tab.", "tab_visible_again", "info");
       }
     }
 
@@ -301,11 +375,6 @@ export default function InterviewLauncher({
     const NO_FACE_TRIGGER_FRAMES = 45; // ~1.5s at 30fps before declaring "no face"
     let lastLoggedNoFace = false;
 
-    function addSecurityEvent(evt: string) {
-      const now = new Date().toLocaleTimeString();
-      setSecurityEvents(prev => [{time: now, event: evt}, ...prev].slice(0, 20));
-    }
-
     function checkFrame() {
       faceCheckRef.current = requestAnimationFrame(checkFrame);
 
@@ -323,14 +392,34 @@ export default function InterviewLauncher({
 
       // Compute brightness for each of 16 blocks (4x4 grid)
       const blockBrightness: number[] = [];
+      let redDominant = 0;
+      let greenDominant = 0;
+      let blueDominant = 0;
+      let sampled = 0;
+      let edgeSignal = 0;
       for (let by = 0; by < 4; by++) {
         for (let bx = 0; bx < 4; bx++) {
           let sum = 0, count = 0;
           for (let y = by * 15; y < (by + 1) * 15; y++) {
             for (let x = bx * 20; x < (bx + 1) * 20; x++) {
               const i = (y * 80 + x) * 4;
-              sum += data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+              const r = data[i];
+              const g = data[i + 1];
+              const b = data[i + 2];
+              const luma = r * 0.299 + g * 0.587 + b * 0.114;
+              sum += luma;
               count++;
+              sampled++;
+              if (r > g + 12 && r > b + 12) redDominant++;
+              if (g > r + 12 && g > b + 12) greenDominant++;
+              if (b > r + 12 && b > g + 12) blueDominant++;
+              if (x > 0 && y > 0 && x % 3 === 0 && y % 3 === 0) {
+                const left = ((y * 80 + (x - 1)) * 4);
+                const up = ((((y - 1) * 80) + x) * 4);
+                const leftLuma = data[left] * 0.299 + data[left + 1] * 0.587 + data[left + 2] * 0.114;
+                const upLuma = data[up] * 0.299 + data[up + 1] * 0.587 + data[up + 2] * 0.114;
+                edgeSignal += Math.abs(luma - leftLuma) + Math.abs(luma - upLuma);
+              }
             }
           }
           blockBrightness.push(sum / count);
@@ -340,12 +429,26 @@ export default function InterviewLauncher({
       const mean = blockBrightness.reduce((a, b) => a + b, 0) / blockBrightness.length;
       const variance = blockBrightness.reduce((a, b) => a + (b - mean) ** 2, 0) / blockBrightness.length;
 
-      // A face requires:
-      //  1. Sufficient scene brightness (mean > 20) — catches covered/dark camera
-      //  2. Brightness variation (variance > 150) — catches blank walls / solid backgrounds
-      //  3. Some pixels brighter than 60 (catches pure black frames)
+      // A valid face frame requires usable texture + lighting.
+      // This catches covered camera (finger/palm), plain surfaces, and dark frames.
       const brightPixels = blockBrightness.filter(b => b > 60).length;
-      const hasFace = mean > 20 && variance > 150 && brightPixels >= 4;
+      const centerBlocks = [5, 6, 9, 10].map((idx) => blockBrightness[idx]);
+      const centerMean = centerBlocks.reduce((a, b) => a + b, 0) / centerBlocks.length;
+      const centerVariance = centerBlocks.reduce((a, b) => a + (b - centerMean) ** 2, 0) / centerBlocks.length;
+      const edgeDensity = edgeSignal / Math.max(1, sampled);
+      const dominantRatio = Math.max(redDominant, greenDominant, blueDominant) / Math.max(1, sampled);
+
+      const likelyOccluded =
+        mean < 16 ||
+        (dominantRatio > 0.84 && edgeDensity < 6.5) ||
+        (variance < 110 && centerVariance < 35);
+
+      const hasFace =
+        !likelyOccluded &&
+        mean > 20 &&
+        variance > 150 &&
+        brightPixels >= 4 &&
+        edgeDensity > 5.8;
 
       if (!hasFace) {
         noFaceFrameCount++;
@@ -363,7 +466,7 @@ export default function InterviewLauncher({
       if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES) {
         setFaceVisible(false);
         if (!lastLoggedNoFace) {
-          addSecurityEvent("Face not visible in camera");
+          logSecurityEvent("Face not visible in camera.", "face_not_visible", "high");
           lastLoggedNoFace = true;
         }
       }
@@ -371,6 +474,7 @@ export default function InterviewLauncher({
 
     faceCheckRef.current = requestAnimationFrame(checkFrame);
     return () => { if (faceCheckRef.current) cancelAnimationFrame(faceCheckRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, cheatingTagged, cameraOn]);
 
 
@@ -391,7 +495,17 @@ export default function InterviewLauncher({
         if (prev <= 1) {
           if (faceTimerRef.current) { window.clearInterval(faceTimerRef.current); faceTimerRef.current = null; }
           setCheatingTagged(true);
-          void saveTurn("assistant", "Cheating detected: face violation — no face or multiple faces for >10 seconds.");
+          logSecurityEvent(
+            "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
+            multipleFaces ? "multiple_faces_detected" : "face_not_visible_timeout",
+            "critical",
+            { multipleFaces }
+          );
+          void saveTurn(
+            "assistant",
+            "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
+            "proctor"
+          );
           setMessage("Interview ended: Face compliance violation.");
           void endInterview();
           return 0;
@@ -414,18 +528,162 @@ export default function InterviewLauncher({
     screenCheckIntervalRef.current = window.setInterval(() => {
       if (!ctx || screenVideo.readyState < 2) return;
       ctx.drawImage(screenVideo, 0, 0, 80, 45);
-      const shot = canvas.toDataURL("image/jpeg", 0.1);
-      if (prevScreenShotRef.current && prevScreenShotRef.current !== shot) {
-        setScreenChanged(true);
-        const now = new Date().toLocaleTimeString();
-        setSecurityEvents(prev => [{time: now, event: "Screen content changed"}, ...prev].slice(0, 20));
+      const imageData = ctx.getImageData(0, 0, 80, 45).data;
+      if (prevScreenPixelsRef.current) {
+        let deltaSum = 0;
+        const prev = prevScreenPixelsRef.current;
+        for (let i = 0; i < imageData.length; i += 24) {
+          deltaSum += Math.abs(imageData[i] - prev[i]);
+        }
+        const meanDelta = deltaSum / (imageData.length / 24);
+        if (meanDelta > 22) {
+          setScreenChanged(true);
+          logSecurityEvent(
+            "Screen content changed during interview.",
+            "screen_change_detected",
+            "low",
+            { meanDelta: Number(meanDelta.toFixed(2)) }
+          );
+        }
       }
-      prevScreenShotRef.current = shot;
+      prevScreenPixelsRef.current = new Uint8ClampedArray(imageData);
     }, 3000);
 
     screenVideo.play().catch(() => {});
     return () => { if (screenCheckIntervalRef.current) window.clearInterval(screenCheckIntervalRef.current); };
   }, [status, cheatingTagged, sharingScreen]);
+
+  function getTurnQueueKey() {
+    return `${TURN_QUEUE_KEY_PREFIX}${interviewId}`;
+  }
+
+  function getSecurityQueueKey() {
+    return `${SECURITY_QUEUE_KEY_PREFIX}${interviewId}`;
+  }
+
+  function readQueuedTurns(): { role: "assistant" | "candidate"; content: string; source: TurnSource }[] {
+    try {
+      const raw = localStorage.getItem(getTurnQueueKey());
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeQueuedTurns(turns: { role: "assistant" | "candidate"; content: string; source: TurnSource }[]) {
+    localStorage.setItem(getTurnQueueKey(), JSON.stringify(turns.slice(-50)));
+  }
+
+  function queueTurn(role: "assistant" | "candidate", content: string, source: TurnSource) {
+    const queued = readQueuedTurns();
+    queued.push({ role, content, source });
+    writeQueuedTurns(queued);
+  }
+
+  function readQueuedSecurityEvents(): { event_type: string; severity: string; details: string; evidence: Record<string, unknown> }[] {
+    try {
+      const raw = localStorage.getItem(getSecurityQueueKey());
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeQueuedSecurityEvents(items: { event_type: string; severity: string; details: string; evidence: Record<string, unknown> }[]) {
+    localStorage.setItem(getSecurityQueueKey(), JSON.stringify(items.slice(-80)));
+  }
+
+  function queueSecurityEvent(event_type: string, severity: string, details: string, evidence: Record<string, unknown> = {}) {
+    const queued = readQueuedSecurityEvents();
+    queued.push({ event_type, severity, details, evidence });
+    writeQueuedSecurityEvents(queued);
+  }
+
+  async function saveSecurityEvent(
+    eventType: string,
+    details: string,
+    severity: "info" | "low" | "medium" | "high" | "critical" = "medium",
+    evidence: Record<string, unknown> = {}
+  ): Promise<boolean> {
+    try {
+      const res = await fetchWithFallback(`/interviews/${interviewId}/security-events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: eventType,
+          severity,
+          details,
+          evidence,
+        }),
+      });
+      if (res.status === 404 || res.status === 400) {
+        return true; // do not queue permanently-invalid events
+      }
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function flushQueuedTurns() {
+    if (flushingTurnsRef.current) return;
+    const queued = readQueuedTurns();
+    if (!queued.length) return;
+    flushingTurnsRef.current = true;
+    try {
+      const remaining: typeof queued = [];
+      for (const turn of queued) {
+        const ok = await saveTurn(turn.role, turn.content, turn.source, false);
+        if (!ok) remaining.push(turn);
+      }
+      writeQueuedTurns(remaining);
+    } finally {
+      flushingTurnsRef.current = false;
+    }
+  }
+
+  async function flushQueuedSecurityEvents() {
+    if (flushingSecurityRef.current) return;
+    const queued = readQueuedSecurityEvents();
+    if (!queued.length) return;
+    flushingSecurityRef.current = true;
+    try {
+      const remaining: typeof queued = [];
+      for (const event of queued) {
+        const ok = await saveSecurityEvent(
+          event.event_type,
+          event.details,
+          (event.severity as "info" | "low" | "medium" | "high" | "critical") || "medium",
+          event.evidence || {}
+        );
+        if (!ok) remaining.push(event);
+      }
+      writeQueuedSecurityEvents(remaining);
+    } finally {
+      flushingSecurityRef.current = false;
+    }
+  }
+
+  function logSecurityEvent(
+    event: string,
+    eventType: string,
+    severity: "info" | "low" | "medium" | "high" | "critical" = "medium",
+    evidence: Record<string, unknown> = {}
+  ) {
+    const nowMs = Date.now();
+    const last = lastEventLoggedAtRef.current[eventType] || 0;
+    if (nowMs - last < 6000) return; // de-noise repeated events
+    lastEventLoggedAtRef.current[eventType] = nowMs;
+    const now = new Date().toLocaleTimeString();
+    setSecurityEvents((prev) => [{ time: now, event, eventType, severity }, ...prev].slice(0, 20));
+    void saveSecurityEvent(eventType, event, severity, evidence).then((ok) => {
+      if (!ok) queueSecurityEvent(eventType, severity, event, evidence);
+    });
+  }
 
   function formatClock(totalSec: number): string {
     const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
@@ -445,6 +703,27 @@ export default function InterviewLauncher({
     window.speechSynthesis.speak(utterance);
   }
 
+  async function loadSecurityEvents() {
+    try {
+      const res = await fetchWithFallback(`/interviews/${interviewId}/security-events`);
+      if (!res.ok) return;
+      const parsed = await readJsonSafe(res);
+      if (!parsed.ok || !Array.isArray(parsed.data)) return;
+      const mapped = parsed.data
+        .slice(-20)
+        .map((e: { details: string; event_type?: string; severity?: string; created_at?: string }) => ({
+          time: e.created_at ? new Date(e.created_at).toLocaleTimeString() : "--:--:--",
+          event: e.details || e.event_type || "security event",
+          eventType: e.event_type,
+          severity: (e.severity || "medium") as SecurityEvent["severity"],
+        }))
+        .reverse();
+      setSecurityEvents(mapped);
+    } catch {
+      // no-op
+    }
+  }
+
   async function loadTurns(): Promise<Turn[]> {
     try {
       const res = await fetchWithFallback(`/interviews/${interviewId}/turns`);
@@ -452,8 +731,9 @@ export default function InterviewLauncher({
       const parsed = await readJsonSafe(res);
       if (!parsed.ok) return [];
       const payload = parsed.data;
-      const turns: Turn[] = (payload || []).map((t: { role: "assistant" | "candidate"; content: string; analysis: string; score: number; confidence_score?: number; communication_score?: number; technical_depth_score?: number; authenticity_score?: number }) => ({
+      const turns: Turn[] = (payload || []).map((t: { role: "assistant" | "candidate"; source?: TurnSource; content: string; analysis: string; score: number; confidence_score?: number; communication_score?: number; technical_depth_score?: number; authenticity_score?: number }) => ({
         role: t.role,
+        source: t.source || "speech",
         content: t.content,
         analysis: t.analysis,
         score: t.score,
@@ -486,26 +766,46 @@ export default function InterviewLauncher({
     }
   }
 
-  async function saveTurn(role: "assistant" | "candidate", content: string): Promise<Turn | null> {
-    try {
-      const res = await fetchWithFallback(`/interviews/${interviewId}/turns`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, content }),
-      });
-      if (!res.ok) return null;
-      const parsed = await readJsonSafe(res);
-      if (!parsed.ok) return null;
-      const payload = parsed.data;
-      return {
-        role: payload.role,
-        content: payload.content,
-        analysis: payload.analysis,
-        score: payload.score,
-      };
-    } catch {
-      return null;
+  async function saveTurn(
+    role: "assistant" | "candidate",
+    content: string,
+    source: TurnSource = "speech",
+    queueOnFail = true
+  ): Promise<Turn | null> {
+    let permanentFailure = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const res = await fetchWithFallback(`/interviews/${interviewId}/turns`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role, content, source }),
+        });
+        if (res.status === 404 || res.status === 400) {
+          permanentFailure = true;
+          break;
+        }
+        if (!res.ok) continue;
+        const parsed = await readJsonSafe(res);
+        if (!parsed.ok) continue;
+        const payload = parsed.data;
+        return {
+          role: payload.role,
+          source: payload.source || source,
+          content: payload.content,
+          analysis: payload.analysis,
+          score: payload.score,
+          confidence_score: payload.confidence_score ?? 0,
+          communication_score: payload.communication_score ?? 0,
+          technical_depth_score: payload.technical_depth_score ?? 0,
+          authenticity_score: payload.authenticity_score ?? 0,
+        };
+      } catch {
+        // retry below
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
     }
+    if (queueOnFail && !permanentFailure) queueTurn(role, content, source);
+    return null;
   }
 
   async function fetchNextQuestion(currentHistory: Turn[]) {
@@ -531,7 +831,7 @@ export default function InterviewLauncher({
         setMessage("AI could not generate a question right now.");
         return;
       }
-      const updated: Turn[] = [...currentHistory, { role: "assistant", content: q }];
+      const updated: Turn[] = [...currentHistory, { role: "assistant", source: "system", content: q }];
       setHistory(updated);
       speak(q);
       setMessage("AI interviewer is speaking...");
@@ -552,15 +852,35 @@ export default function InterviewLauncher({
       userStreamRef.current = camStream;
       attachUserStreamToVideo(camStream);
       camStream.getVideoTracks().forEach((track) => {
-        track.onended = () => setCameraOn(false);
+        track.onended = () => {
+          setCameraOn(false);
+          logSecurityEvent("Camera stream ended unexpectedly.", "camera_unavailable", "high");
+        };
       });
+      const camSettings = camStream.getVideoTracks()[0]?.getSettings?.();
+      if (camSettings) {
+        const width = Number(camSettings.width || 0);
+        const height = Number(camSettings.height || 0);
+        const fps = Number(camSettings.frameRate || 0);
+        if (width < 640 || height < 480 || (fps > 0 && fps < 15)) {
+          setMessage("Camera is active, but quality is low. Improve lighting or switch camera for best interview quality.");
+          logSecurityEvent(
+            "Camera quality is below recommended threshold.",
+            "camera_quality_low",
+            "low",
+            { width, height, fps }
+          );
+        }
+      }
       setCameraOn(true);
       setCheckState("passed");
       setSetupStep("microphone");
       setMessage("Camera access granted. Next: allow microphone.");
+      logSecurityEvent("Camera verification passed.", "camera_check_passed", "info");
     } catch {
       setCheckState("failed");
       setMessage("Camera permission denied.");
+      logSecurityEvent("Camera permission denied by candidate.", "camera_permission_denied", "high");
     }
   }
 
@@ -574,17 +894,29 @@ export default function InterviewLauncher({
       existingVideo.forEach((track) => combined.addTrack(track));
       micStream.getAudioTracks().forEach((track) => {
         combined.addTrack(track);
-        track.onended = () => setMicOn(false);
+        track.onended = () => {
+          setMicOn(false);
+          logSecurityEvent("Microphone stream ended unexpectedly.", "microphone_unavailable", "high");
+        };
       });
+      const micSettings = micStream.getAudioTracks()[0]?.getSettings?.();
+      if (micSettings) {
+        logSecurityEvent("Microphone quality baseline captured.", "microphone_quality_captured", "info", {
+          sampleRate: micSettings.sampleRate ?? null,
+          channelCount: micSettings.channelCount ?? null,
+        });
+      }
       userStreamRef.current = combined;
       attachUserStreamToVideo(combined);
       setMicOn(true);
       setCheckState("passed");
       setSetupStep("screen");
       setMessage("Microphone access granted. Next: allow screen share.");
+      logSecurityEvent("Microphone verification passed.", "microphone_check_passed", "info");
     } catch {
       setCheckState("failed");
       setMessage("Microphone permission denied.");
+      logSecurityEvent("Microphone permission denied by candidate.", "microphone_permission_denied", "high");
     }
   }
 
@@ -607,15 +939,18 @@ export default function InterviewLauncher({
         track.onended = () => {
           setSharingScreen(false);
           screenStreamRef.current = null;
+          logSecurityEvent("Screen sharing stopped by candidate.", "screen_share_stopped", "critical");
         };
       });
       setSharingScreen(true);
       setCheckState("passed");
       setSetupStep("ready");
       setMessage("Screen share granted. You can now start the interview.");
+      logSecurityEvent("Screen share verification passed.", "screen_share_check_passed", "info");
     } catch {
       setCheckState("failed");
       setMessage("Screen share permission denied.");
+      logSecurityEvent("Screen share permission denied by candidate.", "screen_share_permission_denied", "high");
     }
   }
 
@@ -647,6 +982,8 @@ export default function InterviewLauncher({
     }
     try {
       setMessage("Starting interview session...");
+      await flushQueuedTurns();
+      await flushQueuedSecurityEvents();
       const res = await fetchWithFallback(`/interviews/${interviewId}/start`, { method: "POST" });
       const parsed = await readJsonSafe(res);
       if (!parsed.ok) {
@@ -659,6 +996,7 @@ export default function InterviewLauncher({
         return;
       }
       setStatus(payload.status || "in_progress");
+      logSecurityEvent("Interview session started.", "interview_started", "info");
       const existingTurns = await loadTurns();
       await fetchNextQuestion(existingTurns);
     } catch (err) {
@@ -680,6 +1018,38 @@ export default function InterviewLauncher({
     return rec;
   }
 
+  async function submitAnswer(rawText: string, source: TurnSource) {
+    const transcript = rawText.trim();
+    if (!transcript) {
+      setMessage("No answer detected. Please speak or type your response.");
+      return;
+    }
+
+    const savedCandidate = await saveTurn("candidate", transcript, source);
+    const candidateTurn: Turn = savedCandidate || { role: "candidate", source, content: transcript };
+    const updated: Turn[] = [...historyRef.current, candidateTurn];
+    historyRef.current = updated;
+    setHistory(updated);
+    setAnswerDraft("");
+    if (savedCandidate?.analysis) setLastAnalysis(savedCandidate.analysis);
+    if (typeof savedCandidate?.score === "number") setLastScore(savedCandidate.score);
+    if (savedCandidate && typeof savedCandidate.communication_score === "number") {
+      const candidateTurns = updated.filter((t) => t.role === "candidate" && typeof t.communication_score === "number");
+      const avg = (key: keyof Turn) => {
+        const vals = candidateTurns.map((t) => (t[key] as number) ?? 0).filter((v) => v > 0);
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      };
+      setLiveScores({
+        confidence: avg("confidence_score"),
+        communication: avg("communication_score"),
+        technical: avg("technical_depth_score"),
+        authenticity: avg("authenticity_score"),
+      });
+    }
+    setMessage("Answer captured. AI is analyzing and preparing follow-up...");
+    await fetchNextQuestion(updated);
+  }
+
   function startListening() {
     if (listening) return;
     setMessage("");
@@ -698,20 +1068,14 @@ export default function InterviewLauncher({
         setMessage("No speech detected. Please try again.");
         return;
       }
-      const savedCandidate = await saveTurn("candidate", transcript);
-      const candidateTurn: Turn = savedCandidate || { role: "candidate", content: transcript };
-      const updated: Turn[] = [...history, candidateTurn];
-      setHistory(updated);
-      if (savedCandidate?.analysis) setLastAnalysis(savedCandidate.analysis);
-      if (typeof savedCandidate?.score === "number") setLastScore(savedCandidate.score);
-      setMessage("Answer captured. AI is analyzing and preparing follow-up...");
-      await fetchNextQuestion(updated);
+      await submitAnswer(transcript, "speech");
     };
 
     rec.onerror = (event) => {
       if (event.error === "no-speech" && noSpeechRetryRef.current < 1) {
         noSpeechRetryRef.current += 1;
         setMessage("No speech detected. Auto-retrying once...");
+        logSecurityEvent("No speech detected while listening.", "speech_not_detected", "low");
         setListening(false);
         window.setTimeout(() => {
           if (!listeningRef.current) startListening();
@@ -719,6 +1083,7 @@ export default function InterviewLauncher({
         return;
       }
       setMessage(`Listening error: ${event.error}`);
+      logSecurityEvent(`Speech recognition error: ${event.error}`, "speech_error", "medium");
       setListening(false);
     };
 
@@ -754,6 +1119,7 @@ export default function InterviewLauncher({
       const isActive = tracks.some((t) => t.enabled);
       if (isActive) {
         setMessage("Camera is mandatory and cannot be turned off during interview.");
+        logSecurityEvent("Candidate attempted to disable camera.", "camera_disable_attempt", "high");
         return;
       }
       tracks.forEach((t) => {
@@ -777,6 +1143,7 @@ export default function InterviewLauncher({
       const isActive = tracks.some((t) => t.enabled);
       if (isActive) {
         setMessage("Microphone is mandatory and cannot be turned off during interview.");
+        logSecurityEvent("Candidate attempted to disable microphone.", "microphone_disable_attempt", "high");
         return;
       }
       tracks.forEach((t) => {
@@ -793,6 +1160,7 @@ export default function InterviewLauncher({
   async function toggleScreenShare() {
     if (sharingScreen) {
       setMessage("Screen sharing is mandatory and cannot be stopped during interview.");
+      logSecurityEvent("Attempted to stop screen sharing during interview.", "screen_stop_attempt", "high");
       return;
     }
     try {
@@ -810,11 +1178,13 @@ export default function InterviewLauncher({
         track.onended = () => {
           setSharingScreen(false);
           screenStreamRef.current = null;
+          logSecurityEvent("Screen sharing ended while interview is active.", "screen_share_stopped", "critical");
         };
       });
       setMessage("Screen sharing active.");
     } catch {
       setMessage("Screen sharing permission denied.");
+      logSecurityEvent("Screen share permission denied by candidate.", "screen_share_permission_denied", "high");
     }
   }
 
@@ -841,6 +1211,9 @@ export default function InterviewLauncher({
       setCameraOn(false);
       setMicOn(false);
       setSharingScreen(false);
+      logSecurityEvent("Interview session ended.", "interview_ended", "info");
+      void flushQueuedTurns();
+      void flushQueuedSecurityEvents();
       setMessage("Interview ended and saved.");
     } catch (err) {
       setMessage(`Failed to end interview: ${(err as Error).message}`);
@@ -1284,7 +1657,7 @@ export default function InterviewLauncher({
                   ) : history.map((turn, idx) => (
                     <div key={`${turn.role}-${idx}`} className={`rounded-xl p-3 text-xs ${turn.role === "assistant" ? "bg-[#0a0a12] border border-white/5" : "bg-indigo-900/20 border border-indigo-500/30 ml-4"}`}>
                       <p className={`mb-1 font-bold uppercase tracking-wider text-[10px] ${turn.role === "assistant" ? "text-slate-500" : "text-indigo-400"}`}>
-                        {turn.role === "assistant" ? "🤖 AI" : "👤 You"}
+                        {turn.role === "assistant" ? "🤖 AI" : "👤 You"} {turn.source ? `• ${turn.source}` : ""}
                       </p>
                       <p className="leading-relaxed text-slate-300">{turn.content}</p>
                     </div>
@@ -1534,6 +1907,20 @@ export default function InterviewLauncher({
                     Stop
                   </button>
                 </div>
+                <textarea
+                  value={answerDraft}
+                  onChange={(e) => setAnswerDraft(e.target.value)}
+                  placeholder="Type answer fallback (auto-saved to transcript)"
+                  className="mt-3 w-full rounded-lg border border-white/10 bg-[#0a0a12] p-2.5 text-xs text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none"
+                  rows={3}
+                />
+                <button
+                  onClick={() => void submitAnswer(answerDraft, "text")}
+                  disabled={loadingQuestion || !answerDraft.trim()}
+                  className="mt-2 w-full rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/20 disabled:opacity-40"
+                >
+                  Save Typed Answer
+                </button>
                 <p className="mt-3 text-xs text-slate-500">{candidateName} • {jobTitle}</p>
               </div>
             </div>
@@ -1543,4 +1930,3 @@ export default function InterviewLauncher({
     </main>
   );
 }
-

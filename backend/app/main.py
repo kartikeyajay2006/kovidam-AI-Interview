@@ -19,6 +19,27 @@ async def lifespan(app: FastAPI):
         conn.execute(
             text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS question_bank TEXT NOT NULL DEFAULT ''")
         )
+        conn.execute(
+            text("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS risk_level VARCHAR(32) NOT NULL DEFAULT 'low'")
+        )
+        conn.execute(
+            text("ALTER TABLE interview_turn_logs ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'speech'")
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS interview_security_events (
+                    id UUID PRIMARY KEY,
+                    interview_id UUID NOT NULL REFERENCES interview_sessions(id),
+                    event_type VARCHAR(64) NOT NULL,
+                    severity VARCHAR(16) NOT NULL DEFAULT 'medium',
+                    details TEXT NOT NULL DEFAULT '',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
     yield
 
 
