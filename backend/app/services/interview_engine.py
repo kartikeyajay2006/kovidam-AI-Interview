@@ -82,6 +82,25 @@ def _is_repeat_request(text: str) -> bool:
     return any(p in t for p in repeat_patterns)
 
 
+def _is_incomplete_answer(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return True
+    words = re.findall(r"\b\w+\b", cleaned)
+    if len(words) < 8:
+        return True
+    weak_phrases = (
+        "i can tell you",
+        "that's it",
+        "not sure",
+        "i don't know",
+        "i dont know",
+        "maybe",
+    )
+    low = cleaned.lower()
+    return any(p in low for p in weak_phrases) and len(words) < 15
+
+
 def _extract_parsed_sections(parsed_resume_json: dict) -> dict:
     data = parsed_resume_json.get("data") if isinstance(parsed_resume_json, dict) else {}
     if not isinstance(data, dict):
@@ -127,6 +146,66 @@ def _build_coverage_state(cleaned_history: list[dict]) -> dict:
     covered: dict[str, int] = {}
     priority = ["technical_depth", "problem_solving", "debugging", "system_design", "ownership_communication"]
     return {"covered_counts": covered, "uncovered_priority": priority}
+
+
+def _build_contextual_main_questions(
+    *,
+    role_title: str,
+    job_description: str,
+    parsed_sections: dict,
+    resume_skills: str,
+) -> list[str]:
+    topics: list[str] = []
+    role = (role_title or "").strip()
+    jd = (job_description or "").strip()
+
+    if role:
+        topics.append(f"Hands-on architecture and engineering decisions for the {role} role")
+
+    skills_from_resume = []
+    if isinstance(parsed_sections.get("skills"), list):
+        skills_from_resume = [str(s).strip() for s in parsed_sections["skills"] if str(s).strip()][:6]
+
+    skills_text = [s.strip() for s in (resume_skills or "").split(",") if s.strip()]
+    all_skills = []
+    for s in skills_from_resume + skills_text:
+        if s.lower() not in {x.lower() for x in all_skills}:
+            all_skills.append(s)
+    for skill in all_skills[:4]:
+        topics.append(f"Practical problem-solving and trade-offs using {skill}")
+
+    project_titles = []
+    if isinstance(parsed_sections.get("projects"), list):
+        for project in parsed_sections["projects"][:3]:
+            if isinstance(project, dict):
+                title = str(project.get("title") or "").strip()
+                if title:
+                    project_titles.append(title)
+    for title in project_titles:
+        topics.append(f"Deep dive into project implementation details for {title}")
+
+    if jd:
+        jd_tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{2,}", jd)
+        common = {
+            "and", "with", "for", "the", "that", "this", "from", "your", "you", "will", "have", "using",
+            "experience", "engineering", "developer", "development", "design", "system", "systems", "work",
+        }
+        picked: list[str] = []
+        for tok in jd_tokens:
+            low = tok.lower()
+            if low in common or low.isdigit():
+                continue
+            if low not in {p.lower() for p in picked}:
+                picked.append(tok)
+            if len(picked) >= 3:
+                break
+        for tok in picked:
+            topics.append(f"Real-world implementation, debugging, and scaling with {tok}")
+
+    if not topics:
+        return [q["main"] for q in QUESTION_BANK]
+
+    return topics[:8]
 
 
 def _determine_main_state(cleaned_history: list[dict], main_questions: list[str]) -> tuple[int, int]:
@@ -179,11 +258,12 @@ def _generate_ai_intro_question(*, settings, candidate_name: str, role_title: st
         },
         "constraints": [
             "Return strict JSON only",
-            "Start with 'Hey {name}' if a candidate name is provided",
-            "Ask them to introduce themselves naturally in a real interview style",
+            "Greet naturally if a candidate name is provided (do not force fixed phrasing)",
+            "Ask a natural opening interview question grounded in role or resume context",
             "Keep it conversational and human, not robotic",
             "Use plain spoken English",
             "Single question only",
+            "Avoid repeating the same opening wording across interviews",
         ],
         "output_schema": {"question": "string"},
     }
@@ -315,9 +395,15 @@ def generate_interview_question(
     cleaned_history = _trim_history(history)
     settings = get_settings()
 
+    parsed_sections = _extract_parsed_sections(parsed_resume_json)
     main_questions = [b["question"] for b in human_question_bank if b.get("type") == "main" and b.get("question")]
     if not main_questions:
-        main_questions = [q["main"] for q in QUESTION_BANK]
+        main_questions = _build_contextual_main_questions(
+            role_title=role_title,
+            job_description=job_description,
+            parsed_sections=parsed_sections,
+            resume_skills=resume_skills,
+        )
 
     last_candidate_turn = None
     for turn in reversed(cleaned_history):
@@ -339,9 +425,14 @@ def generate_interview_question(
             )
             return ai_repeat, f"source=repeat_guard state=hold {repeat_meta}"
 
+    if last_candidate_turn and _is_incomplete_answer(last_candidate_turn):
+        return (
+            "Thanks. Could you expand on that with one concrete example, your exact steps, and the result?",
+            "source=incomplete_answer_guard state=hold",
+        )
+
     asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
     current_main_idx, followups_done = _determine_main_state(cleaned_history, main_questions)
-    parsed_sections = _extract_parsed_sections(parsed_resume_json)
     _ = _sanitize_resume_text(resume_text)
     _ = resume_skills
 

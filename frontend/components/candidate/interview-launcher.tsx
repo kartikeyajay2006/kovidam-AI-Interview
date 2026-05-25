@@ -34,6 +34,10 @@ type SpeechRecognitionLike = {
   stop: () => void;
 };
 
+type FaceDetectorLike = {
+  detect: (image: CanvasImageSource) => Promise<Array<{ boundingBox?: { width?: number; height?: number } }>>;
+};
+
 const PRIMARY_API = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy/api/v1";
 const FALLBACK_API = "http://127.0.0.1:8000/api/v1";
 const TURN_QUEUE_KEY_PREFIX = "kovi_turn_queue_";
@@ -97,6 +101,7 @@ export default function InterviewLauncher({
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [answerDraft, setAnswerDraft] = useState("");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const faceDetectorRef = useRef<FaceDetectorLike | null>(null);
   const noSpeechRetryRef = useRef(0);
   const lastEventLoggedAtRef = useRef<Record<string, number>>({});
   const listeningRef = useRef(false);
@@ -112,6 +117,7 @@ export default function InterviewLauncher({
   const screenStreamRef = useRef<MediaStream | null>(null);
   const prevScreenPixelsRef = useRef<Uint8ClampedArray | null>(null);
   const screenCheckIntervalRef = useRef<number | null>(null);
+  const elapsedSecRef = useRef(0);
 
   function attachUserStreamToVideo(stream: MediaStream | null) {
     if (!userVideoRef.current || !stream) return;
@@ -158,6 +164,10 @@ export default function InterviewLauncher({
   useEffect(() => {
     historyRef.current = history;
   }, [history]);
+
+  useEffect(() => {
+    elapsedSecRef.current = elapsedSec;
+  }, [elapsedSec]);
 
   useEffect(() => {
     const onOnline = () => setInternetOnline(true);
@@ -363,6 +373,15 @@ export default function InterviewLauncher({
     attachUserStreamToVideo(userStreamRef.current);
   }, [mounted, status]);
 
+  useEffect(() => {
+    const maybeWindow = window as Window & {
+      FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => FaceDetectorLike;
+    };
+    if (maybeWindow.FaceDetector && !faceDetectorRef.current) {
+      faceDetectorRef.current = new maybeWindow.FaceDetector({ fastMode: true, maxDetectedFaces: 2 });
+    }
+  }, []);
+
   // Face detection via canvas pixel brightness analysis
   useEffect(() => {
     if (status !== "in_progress" || cheatingTagged || !cameraOn) return;
@@ -371,9 +390,11 @@ export default function InterviewLauncher({
     if (!canvas || !video) return;
 
     let noFaceFrameCount = 0;       // consecutive frames with no face detected
+    let hardOcclusionFrameCount = 0;
     let frameCounter = 0;           // throttle: only analyse every 6th frame
-    const NO_FACE_TRIGGER_FRAMES = 45; // ~1.5s at 30fps before declaring "no face"
+    const NO_FACE_TRIGGER_FRAMES = 120; // ~4s at 30fps before declaring "no face"
     let lastLoggedNoFace = false;
+    let detectorBusy = false;
 
     function checkFrame() {
       faceCheckRef.current = requestAnimationFrame(checkFrame);
@@ -438,22 +459,56 @@ export default function InterviewLauncher({
       const edgeDensity = edgeSignal / Math.max(1, sampled);
       const dominantRatio = Math.max(redDominant, greenDominant, blueDominant) / Math.max(1, sampled);
 
+      const hardOcclusion =
+        mean < 8 ||
+        (dominantRatio > 0.95 && edgeDensity < 4.2) ||
+        (variance < 55 && edgeDensity < 4.8);
+
       const likelyOccluded =
-        mean < 16 ||
-        (dominantRatio > 0.84 && edgeDensity < 6.5) ||
-        (variance < 110 && centerVariance < 35);
+        mean < 12 ||
+        (dominantRatio > 0.9 && edgeDensity < 5.2) ||
+        (variance < 75 && centerVariance < 22);
 
       const hasFace =
+        !hardOcclusion &&
         !likelyOccluded &&
-        mean > 20 &&
-        variance > 150 &&
-        brightPixels >= 4 &&
-        edgeDensity > 5.8;
+        mean > 14 &&
+        brightPixels >= 3 &&
+        (variance > 70 || edgeDensity > 5);
+
+      // Prefer real face detection when supported to reduce false positives.
+      if (!detectorBusy && faceDetectorRef.current && frameCounter % 12 === 0) {
+        detectorBusy = true;
+        void faceDetectorRef.current
+          .detect(canvas)
+          .then((faces) => {
+            const validFaces = (faces || []).filter((f) => {
+              const w = Number(f.boundingBox?.width || 0);
+              const h = Number(f.boundingBox?.height || 0);
+              return w > 8 && h > 8;
+            });
+            setMultipleFaces(validFaces.length > 1);
+            if (validFaces.length >= 1) {
+              noFaceFrameCount = 0;
+              hardOcclusionFrameCount = 0;
+              if (lastLoggedNoFace) lastLoggedNoFace = false;
+              setFaceVisible(true);
+            }
+          })
+          .catch(() => {
+            // Fallback to heuristic path.
+          })
+          .finally(() => {
+            detectorBusy = false;
+          });
+      }
 
       if (!hasFace) {
         noFaceFrameCount++;
+        hardOcclusionFrameCount = hardOcclusion ? hardOcclusionFrameCount + 1 : Math.max(0, hardOcclusionFrameCount - 1);
       } else {
         noFaceFrameCount = 0;
+        hardOcclusionFrameCount = 0;
         if (lastLoggedNoFace) {
           lastLoggedNoFace = false;
           setFaceVisible(true);
@@ -463,7 +518,7 @@ export default function InterviewLauncher({
       }
 
       // Only declare "no face" after sustained absence (avoids flicker on blink/look-away)
-      if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES) {
+      if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES && hardOcclusionFrameCount >= 45) {
         setFaceVisible(false);
         if (!lastLoggedNoFace) {
           logSecurityEvent("Face not visible in camera.", "face_not_visible", "high");
@@ -487,8 +542,12 @@ export default function InterviewLauncher({
       setFaceViolationCountdown(null);
       return;
     }
+    if (!multipleFaces && elapsedSecRef.current < 25) {
+      // Grace period at interview start to avoid false-positive exits during camera warm-up.
+      return;
+    }
     if (faceTimerRef.current) return;
-    setFaceViolationCountdown(10);
+    setFaceViolationCountdown(20);
     faceTimerRef.current = window.setInterval(() => {
       setFaceViolationCountdown(prev => {
         if (prev === null) return null;
@@ -1024,6 +1083,8 @@ export default function InterviewLauncher({
       setMessage("No answer detected. Please speak or type your response.");
       return;
     }
+    const words = transcript.split(/\s+/).filter(Boolean);
+    const tooShort = words.length < 8;
 
     const savedCandidate = await saveTurn("candidate", transcript, source);
     const candidateTurn: Turn = savedCandidate || { role: "candidate", source, content: transcript };
@@ -1045,6 +1106,10 @@ export default function InterviewLauncher({
         technical: avg("technical_depth_score"),
         authenticity: avg("authenticity_score"),
       });
+    }
+    if (tooShort) {
+      setMessage("Your answer seems incomplete. Please continue with more details before moving to next question.");
+      return;
     }
     setMessage("Answer captured. AI is analyzing and preparing follow-up...");
     await fetchNextQuestion(updated);

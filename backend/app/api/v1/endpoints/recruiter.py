@@ -623,7 +623,14 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         .where(InterviewTurnLog.interview_id == interview_id)
         .order_by(InterviewTurnLog.created_at.asc())
     ).scalars().all()
-    stored_history = [{"role": t.role, "content": t.content} for t in stored_turns]
+    stored_history = []
+    for t in stored_turns:
+        if t.role == "assistant" and t.source == "proctor":
+            continue
+        content = (t.content or "").strip()
+        if not content:
+            continue
+        stored_history.append({"role": t.role, "content": content})
     payload_history = [InterviewTurn(role=t.role, content=t.content).model_dump() for t in payload.history]
     merged_history = stored_history if stored_history else payload_history
 
