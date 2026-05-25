@@ -44,10 +44,38 @@ type ReviewPacket = {
     }>;
   }>;
   security_events: Array<{
+    id?: string;
     event_type: string;
     severity: string;
+    event_index?: number;
+    prev_hash?: string;
+    event_hash?: string;
     details: string;
     created_at: string;
+  }>;
+  evidence_snapshots?: Array<{
+    id: string;
+    snapshot_type: string;
+    image_data_url: string;
+    image_hash: string;
+    created_at: string;
+  }>;
+  copilot?: {
+    overall_recommendation: string;
+    confidence: number;
+    competency_scores: Array<{ competency: string; score: number; summary: string }>;
+    red_flags: string[];
+    evidence_links: string[];
+  } | null;
+};
+
+type PlaybackPacket = {
+  interview_id: string;
+  timeline: Array<{
+    timestamp: string;
+    kind: string;
+    content: string;
+    metadata?: Record<string, unknown>;
   }>;
 };
 
@@ -69,6 +97,7 @@ export default function InterviewReviewPanel() {
   const [packet, setPacket] = useState<ReviewPacket | null>(null);
   const [loading, setLoading] = useState(false);
   const [deletingInterviewId, setDeletingInterviewId] = useState("");
+  const [playback, setPlayback] = useState<PlaybackPacket | null>(null);
   const [message, setMessage] = useState("");
 
   async function loadFeed() {
@@ -93,6 +122,13 @@ export default function InterviewReviewPanel() {
       }
       const data = await res.json();
       setPacket(data);
+      const playbackRes = await fetchWithFallback(`/interviews/${interviewId}/playback`);
+      if (playbackRes.ok) {
+        const playbackData = await playbackRes.json();
+        setPlayback(playbackData);
+      } else {
+        setPlayback(null);
+      }
       setSelectedInterviewId(interviewId);
     } catch (err) {
       setMessage(`Could not load interview details: ${(err as Error).message}`);
@@ -140,6 +176,7 @@ export default function InterviewReviewPanel() {
       if (selectedInterviewId === item.interview_id) {
         setSelectedInterviewId("");
         setPacket(null);
+        setPlayback(null);
       }
       setMessage("Interview deleted.");
     } catch (err) {
@@ -250,6 +287,36 @@ export default function InterviewReviewPanel() {
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {packet.copilot ? (
+              <div className="rounded-xl border border-white/10 bg-[#0f1119] p-3 lg:col-span-2">
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Recruiter Copilot</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-indigo-300">
+                    Recommendation: {packet.copilot.overall_recommendation}
+                  </span>
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-300">
+                    Confidence: {Math.round((packet.copilot.confidence || 0) * 100)}%
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {(packet.copilot.competency_scores || []).map((c) => (
+                    <div key={c.competency} className="rounded-lg border border-white/10 bg-[#0a0c12] p-2 text-xs">
+                      <p className="font-semibold text-slate-200">{c.competency} • {c.score.toFixed(1)}</p>
+                      <p className="mt-1 text-slate-400">{c.summary}</p>
+                    </div>
+                  ))}
+                </div>
+                {(packet.copilot.red_flags || []).length > 0 && (
+                  <div className="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/5 p-2 text-xs">
+                    <p className="font-semibold text-rose-300">Red Flags</p>
+                    {(packet.copilot.red_flags || []).slice(0, 5).map((flag, idx) => (
+                      <p key={`${flag}-${idx}`} className="mt-1 text-slate-300">• {flag}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
             <div className="rounded-xl border border-white/10 bg-[#0f1119] p-3">
               <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Questions & Answers</p>
               <div className="mt-3 max-h-[360px] space-y-3 overflow-y-auto">
@@ -284,8 +351,12 @@ export default function InterviewReviewPanel() {
                 ) : (
                   packet.security_events.map((event, idx) => (
                     <div key={`${event.created_at}-${idx}`} className="rounded-lg border border-white/10 bg-[#0a0c12] p-2 text-xs">
-                      <p className="font-semibold text-rose-300">{event.event_type} • {event.severity}</p>
+                      <p className="font-semibold text-rose-300">
+                        {event.event_type} • {event.severity}
+                        {typeof event.event_index === "number" ? ` • #${event.event_index}` : ""}
+                      </p>
                       <p className="mt-1 text-slate-300">{event.details}</p>
+                      {event.event_hash ? <p className="mt-1 break-all text-[10px] text-slate-500">hash: {event.event_hash}</p> : null}
                       <p className="mt-1 text-slate-500">{new Date(event.created_at).toLocaleString()}</p>
                     </div>
                   ))
@@ -293,6 +364,38 @@ export default function InterviewReviewPanel() {
               </div>
             </div>
           </div>
+
+          {packet.evidence_snapshots && packet.evidence_snapshots.length > 0 ? (
+            <div className="mt-4 rounded-xl border border-white/10 bg-[#0f1119] p-3">
+              <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Evidence Snapshots</p>
+              <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+                {packet.evidence_snapshots.slice(-8).map((snap) => (
+                  <div key={snap.id} className="rounded-lg border border-white/10 bg-[#0a0c12] p-2">
+                    <img src={snap.image_data_url} alt={snap.snapshot_type} className="h-20 w-full rounded object-cover" />
+                    <p className="mt-1 text-[10px] text-slate-400">{snap.snapshot_type}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {playback ? (
+            <details className="mt-4 rounded-xl border border-white/10 bg-[#0f1119] p-3">
+              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-widest text-slate-400">
+                Playback Timeline
+              </summary>
+              <div className="mt-3 max-h-56 space-y-2 overflow-y-auto text-xs">
+                {playback.timeline.map((entry, idx) => (
+                  <div key={`${entry.kind}-${idx}`} className="rounded-md border border-white/10 bg-[#0a0c12] p-2">
+                    <p className="text-slate-500">
+                      {entry.kind} • {new Date(entry.timestamp).toLocaleString()}
+                    </p>
+                    <p className="mt-1 text-slate-200">{entry.content}</p>
+                  </div>
+                ))}
+              </div>
+            </details>
+          ) : null}
 
           <details className="mt-4 rounded-xl border border-white/10 bg-[#0f1119] p-3">
             <summary className="cursor-pointer text-xs font-semibold uppercase tracking-widest text-slate-400">

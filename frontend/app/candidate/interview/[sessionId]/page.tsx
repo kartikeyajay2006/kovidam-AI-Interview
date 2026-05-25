@@ -1,4 +1,5 @@
 import InterviewLauncher from "../../../../components/candidate/interview-launcher";
+import { headers } from "next/headers";
 
 interface CandidateInterviewProps {
   params: Promise<{ sessionId: string }>;
@@ -16,13 +17,32 @@ type InterviewDetail = {
 };
 
 async function getInterview(sessionId: string): Promise<InterviewDetail | null> {
-  try {
-    const res = await fetch(`http://localhost:8000/api/v1/interviews/${sessionId}`, { cache: "no-store" });
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    return null;
+  const hdrs = await headers();
+  const host = hdrs.get("x-forwarded-host") || hdrs.get("host") || "localhost:3000";
+  const proto = hdrs.get("x-forwarded-proto") || "http";
+  const origin = `${proto}://${host}`;
+  const backendInternal = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000";
+
+  const urls = Array.from(
+    new Set([
+      `${origin}/api/proxy/api/v1/interviews/${sessionId}`,
+      `${backendInternal}/api/v1/interviews/${sessionId}`,
+      `http://127.0.0.1:8000/api/v1/interviews/${sessionId}`,
+      `http://localhost:8000/api/v1/interviews/${sessionId}`,
+      `http://backend:8000/api/v1/interviews/${sessionId}`,
+    ])
+  );
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      return await res.json();
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 export default async function CandidateInterviewPage({ params }: CandidateInterviewProps) {

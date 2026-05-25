@@ -33,8 +33,35 @@ async def lifespan(app: FastAPI):
                     interview_id UUID NOT NULL REFERENCES interview_sessions(id),
                     event_type VARCHAR(64) NOT NULL,
                     severity VARCHAR(16) NOT NULL DEFAULT 'medium',
+                    event_index INTEGER NOT NULL DEFAULT 0,
+                    prev_hash VARCHAR(128) NOT NULL DEFAULT '',
+                    event_hash VARCHAR(128) NOT NULL DEFAULT '',
                     details TEXT NOT NULL DEFAULT '',
                     evidence_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE interview_security_events ADD COLUMN IF NOT EXISTS event_index INTEGER NOT NULL DEFAULT 0")
+        )
+        conn.execute(
+            text("ALTER TABLE interview_security_events ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(128) NOT NULL DEFAULT ''")
+        )
+        conn.execute(
+            text("ALTER TABLE interview_security_events ADD COLUMN IF NOT EXISTS event_hash VARCHAR(128) NOT NULL DEFAULT ''")
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS interview_evidence_snapshots (
+                    id UUID PRIMARY KEY,
+                    interview_id UUID NOT NULL REFERENCES interview_sessions(id),
+                    security_event_id UUID NULL REFERENCES interview_security_events(id),
+                    snapshot_type VARCHAR(32) NOT NULL DEFAULT 'camera',
+                    image_data_url TEXT NOT NULL DEFAULT '',
+                    image_hash VARCHAR(128) NOT NULL DEFAULT '',
                     created_at TIMESTAMP NOT NULL DEFAULT NOW()
                 )
                 """

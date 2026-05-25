@@ -1,3 +1,5 @@
+import hashlib
+import json as _json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +8,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.entities import Candidate, InterviewSecurityEvent, InterviewSession, InterviewTurnLog, Job, Resume
+from app.models.entities import (
+    Candidate,
+    InterviewEvidenceSnapshot,
+    InterviewSecurityEvent,
+    InterviewSession,
+    InterviewTurnLog,
+    Job,
+    Resume,
+)
 from app.schemas.recruiter import (
     BulkInviteResponse,
     CandidateCreate,
@@ -15,7 +25,11 @@ from app.schemas.recruiter import (
     DashboardStats,
     InterviewCreate,
     InterviewDetail,
+    InterviewEvidenceSnapshotOut,
     InterviewOut,
+    InterviewPlaybackEntry,
+    InterviewPlaybackPacket,
+    InterviewReviewCopilot,
     InterviewQuestionRequest,
     InterviewQuestionResponse,
     InterviewReviewFeedItem,
@@ -27,6 +41,7 @@ from app.schemas.recruiter import (
     InterviewTurn,
     InterviewTurnCreate,
     InterviewTurnOut,
+    CompetencyScore,
     JobCreate,
     JobOut,
     SendInterviewLinkRequest,
@@ -214,6 +229,106 @@ def _recalculate_interview_integrity(db: Session, interview: InterviewSession) -
         interview.risk_level = "critical"
 
 
+def _next_security_chain_values(db: Session, interview_id: UUID) -> tuple[int, str]:
+    last = db.execute(
+        select(InterviewSecurityEvent)
+        .where(InterviewSecurityEvent.interview_id == interview_id)
+        .order_by(InterviewSecurityEvent.event_index.desc(), InterviewSecurityEvent.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+    if not last:
+        return 1, "GENESIS"
+    return int(last.event_index or 0) + 1, (last.event_hash or "GENESIS")
+
+
+def _compute_event_hash(interview_id: UUID, event_index: int, prev_hash: str, event_type: str, severity: str, details: str, evidence_json: str) -> str:
+    payload = f"{interview_id}|{event_index}|{prev_hash}|{event_type}|{severity}|{details}|{evidence_json}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _extract_security_snapshot_entries(evidence: dict) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    camera = str(evidence.get("camera_snapshot") or "").strip()
+    screen = str(evidence.get("screen_snapshot") or "").strip()
+    if camera.startswith("data:image/"):
+        entries.append(("camera", camera))
+    if screen.startswith("data:image/"):
+        entries.append(("screen", screen))
+    return entries
+
+
+def _build_review_copilot(
+    *,
+    interview_id: UUID,
+    turns: list[InterviewTurnLog],
+    security_events: list[InterviewSecurityEvent],
+) -> InterviewReviewCopilot:
+    candidate_turns = [t for t in turns if t.role == "candidate"]
+    confidence_vals = [float(t.confidence_score or 0.0) for t in candidate_turns if float(t.confidence_score or 0.0) > 0]
+    comm_vals = [float(t.communication_score or 0.0) for t in candidate_turns if float(t.communication_score or 0.0) > 0]
+    tech_vals = [float(t.technical_depth_score or 0.0) for t in candidate_turns if float(t.technical_depth_score or 0.0) > 0]
+    auth_vals = [float(t.authenticity_score or 0.0) for t in candidate_turns if float(t.authenticity_score or 0.0) > 0]
+
+    def _avg(values: list[float]) -> float:
+        return round(sum(values) / len(values), 2) if values else 0.0
+
+    severe = [e for e in security_events if e.severity in {"high", "critical"}]
+    red_flags: list[str] = []
+    for e in severe[:8]:
+        red_flags.append(f"{e.event_type}: {e.details}")
+
+    competency_scores = [
+        CompetencyScore(
+            competency="communication",
+            score=_avg(comm_vals),
+            summary="Clarity, structure, and ability to explain decisions.",
+        ),
+        CompetencyScore(
+            competency="technical_depth",
+            score=_avg(tech_vals),
+            summary="Hands-on depth and implementation rigor.",
+        ),
+        CompetencyScore(
+            competency="confidence",
+            score=_avg(confidence_vals),
+            summary="Confidence and decision ownership under questioning.",
+        ),
+        CompetencyScore(
+            competency="authenticity",
+            score=_avg(auth_vals),
+            summary="Originality and consistency of responses.",
+        ),
+    ]
+    overall_numeric = _avg([c.score for c in competency_scores if c.score > 0]) if competency_scores else 0.0
+    if severe:
+        overall_numeric = max(0.0, round(overall_numeric - min(3.0, 0.4 * len(severe)), 2))
+
+    if overall_numeric >= 8.0 and len(severe) == 0:
+        recommendation = "strong_yes"
+    elif overall_numeric >= 7.0 and len(severe) <= 1:
+        recommendation = "yes"
+    elif overall_numeric >= 6.0:
+        recommendation = "lean_yes"
+    elif overall_numeric >= 5.0:
+        recommendation = "lean_no"
+    elif overall_numeric >= 3.5:
+        recommendation = "no"
+    else:
+        recommendation = "strong_no"
+
+    evidence_links = [
+        f"/api/v1/interviews/{interview_id}/review-packet",
+        f"/api/v1/interviews/{interview_id}/playback",
+    ]
+    return InterviewReviewCopilot(
+        overall_recommendation=recommendation,
+        confidence=min(1.0, max(0.0, round(0.45 + (overall_numeric / 20.0), 2))),
+        competency_scores=competency_scores,
+        red_flags=red_flags,
+        evidence_links=evidence_links,
+    )
+
+
 def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple[bool, str]:
     target_email = candidate.email.strip()
     if not is_deliverable_email(target_email):
@@ -323,6 +438,7 @@ def delete_candidate(candidate_id: UUID, db: Session = Depends(get_db)):
         select(InterviewSession.id).where(InterviewSession.candidate_id == candidate_id)
     ).scalars().all()
     if interview_ids:
+        db.execute(delete(InterviewEvidenceSnapshot).where(InterviewEvidenceSnapshot.interview_id.in_(interview_ids)))
         db.execute(delete(InterviewSecurityEvent).where(InterviewSecurityEvent.interview_id.in_(interview_ids)))
         db.execute(delete(InterviewTurnLog).where(InterviewTurnLog.interview_id.in_(interview_ids)))
         db.execute(delete(InterviewSession).where(InterviewSession.id.in_(interview_ids)))
@@ -401,6 +517,7 @@ def delete_interview(interview_id: UUID, db: Session = Depends(get_db)):
     if not interview:
         raise HTTPException(status_code=404, detail="Interview session not found")
 
+    db.execute(delete(InterviewEvidenceSnapshot).where(InterviewEvidenceSnapshot.interview_id == interview_id))
     db.execute(delete(InterviewSecurityEvent).where(InterviewSecurityEvent.interview_id == interview_id))
     db.execute(delete(InterviewTurnLog).where(InterviewTurnLog.interview_id == interview_id))
     db.execute(delete(InterviewSession).where(InterviewSession.id == interview_id))
@@ -476,6 +593,11 @@ def interview_review_packet(interview_id: UUID, db: Session = Depends(get_db)):
         .where(InterviewSecurityEvent.interview_id == interview_id)
         .order_by(InterviewSecurityEvent.created_at.asc())
     ).scalars().all()
+    snapshots = db.execute(
+        select(InterviewEvidenceSnapshot)
+        .where(InterviewEvidenceSnapshot.interview_id == interview_id)
+        .order_by(InterviewEvidenceSnapshot.created_at.asc())
+    ).scalars().all()
 
     qna_pairs: list[InterviewQuestionReview] = []
     current_q_idx = -1
@@ -533,6 +655,23 @@ def interview_review_packet(interview_id: UUID, db: Session = Depends(get_db)):
         transcript=transcript,
         qna_pairs=qna_pairs,
         security_events=security_events,
+        evidence_snapshots=[
+            InterviewEvidenceSnapshotOut(
+                id=s.id,
+                interview_id=s.interview_id,
+                security_event_id=s.security_event_id,
+                snapshot_type=s.snapshot_type,
+                image_data_url=s.image_data_url,
+                image_hash=s.image_hash,
+                created_at=s.created_at,
+            )
+            for s in snapshots
+        ],
+        copilot=_build_review_copilot(
+            interview_id=interview.id,
+            turns=turns,
+            security_events=security_events,
+        ),
     )
 
 
@@ -795,20 +934,48 @@ def list_security_events(interview_id: UUID, db: Session = Depends(get_db)):
 
 @router.post("/interviews/{interview_id}/security-events", response_model=InterviewSecurityEventOut)
 def add_security_event(interview_id: UUID, payload: InterviewSecurityEventCreate, db: Session = Depends(get_db)):
-    import json as _json
-
     interview = db.execute(select(InterviewSession).where(InterviewSession.id == interview_id)).scalars().first()
     if not interview:
         raise HTTPException(status_code=404, detail="Interview session not found")
 
+    normalized_event_type = payload.event_type.strip().lower()
+    normalized_severity = _normalize_severity(payload.severity)
+    details = (payload.details or "").strip()[:1500]
+    evidence_obj = payload.evidence or {}
+    evidence_json = _json.dumps(evidence_obj)
+    event_index, prev_hash = _next_security_chain_values(db, interview_id)
+    event_hash = _compute_event_hash(
+        interview_id,
+        event_index,
+        prev_hash,
+        normalized_event_type,
+        normalized_severity,
+        details,
+        evidence_json,
+    )
+
     event = InterviewSecurityEvent(
         interview_id=interview_id,
-        event_type=payload.event_type.strip().lower(),
-        severity=_normalize_severity(payload.severity),
-        details=(payload.details or "").strip()[:1500],
-        evidence_json=_json.dumps(payload.evidence or {}),
+        event_type=normalized_event_type,
+        severity=normalized_severity,
+        event_index=event_index,
+        prev_hash=prev_hash,
+        event_hash=event_hash,
+        details=details,
+        evidence_json=evidence_json,
     )
     db.add(event)
+    db.flush()
+    for snapshot_type, image_data_url in _extract_security_snapshot_entries(evidence_obj):
+        db.add(
+            InterviewEvidenceSnapshot(
+                interview_id=interview_id,
+                security_event_id=event.id,
+                snapshot_type=snapshot_type,
+                image_data_url=image_data_url,
+                image_hash=hashlib.sha256(image_data_url.encode("utf-8")).hexdigest(),
+            )
+        )
     _recalculate_interview_integrity(db, interview)
     db.commit()
     db.refresh(event)
@@ -839,6 +1006,73 @@ def qna_map(interview_id: UUID, db: Session = Depends(get_db)):
             )
 
     return {"interview_id": str(interview_id), "qna_pairs": pairs}
+
+
+@router.get("/interviews/{interview_id}/playback", response_model=InterviewPlaybackPacket)
+def interview_playback(interview_id: UUID, db: Session = Depends(get_db)):
+    turns = db.execute(
+        select(InterviewTurnLog)
+        .where(InterviewTurnLog.interview_id == interview_id)
+        .order_by(InterviewTurnLog.created_at.asc())
+    ).scalars().all()
+    events = db.execute(
+        select(InterviewSecurityEvent)
+        .where(InterviewSecurityEvent.interview_id == interview_id)
+        .order_by(InterviewSecurityEvent.created_at.asc())
+    ).scalars().all()
+    snapshots = db.execute(
+        select(InterviewEvidenceSnapshot)
+        .where(InterviewEvidenceSnapshot.interview_id == interview_id)
+        .order_by(InterviewEvidenceSnapshot.created_at.asc())
+    ).scalars().all()
+
+    timeline: list[InterviewPlaybackEntry] = []
+    for t in turns:
+        timeline.append(
+            InterviewPlaybackEntry(
+                timestamp=t.created_at,
+                kind="question" if t.role == "assistant" else "answer",
+                content=t.content,
+                metadata={
+                    "role": t.role,
+                    "source": t.source,
+                    "analysis": t.analysis,
+                    "score": t.score,
+                },
+            )
+        )
+    for e in events:
+        timeline.append(
+            InterviewPlaybackEntry(
+                timestamp=e.created_at,
+                kind="security_event",
+                content=e.details or e.event_type,
+                metadata={
+                    "event_type": e.event_type,
+                    "severity": e.severity,
+                    "event_index": e.event_index,
+                    "prev_hash": e.prev_hash,
+                    "event_hash": e.event_hash,
+                },
+            )
+        )
+    for s in snapshots:
+        timeline.append(
+            InterviewPlaybackEntry(
+                timestamp=s.created_at,
+                kind="snapshot",
+                content=f"{s.snapshot_type} snapshot",
+                metadata={
+                    "snapshot_type": s.snapshot_type,
+                    "image_data_url": s.image_data_url,
+                    "image_hash": s.image_hash,
+                    "security_event_id": str(s.security_event_id) if s.security_event_id else "",
+                },
+            )
+        )
+
+    timeline.sort(key=lambda item: item.timestamp)
+    return InterviewPlaybackPacket(interview_id=interview_id, timeline=timeline)
 
 
 @router.get("/interviews/{interview_id}/state-trace")

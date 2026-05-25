@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     frontend_base_url: str = Field(default="http://localhost:3000", alias="FRONTEND_BASE_URL")
     openai_api_key: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_KEY", "GROQ_API_KEY"))
     openai_model: str = Field(default="gpt-4o-mini", validation_alias=AliasChoices("OPENAI_MODEL", "GROQ_MODEL"))
+    openai_fallback_model: str = Field(default="", alias="OPENAI_FALLBACK_MODEL")
 
 
 @lru_cache(maxsize=1)

@@ -101,6 +101,56 @@ def _is_incomplete_answer(text: str) -> bool:
     return any(p in low for p in weak_phrases) and len(words) < 15
 
 
+def _evaluate_answer_depth(text: str) -> dict:
+    cleaned = (text or "").strip()
+    words = re.findall(r"\b\w+\b", cleaned)
+    lowered = cleaned.lower()
+    step_markers = (
+        "first",
+        "then",
+        "next",
+        "after",
+        "finally",
+        "step",
+        "started by",
+        "i debugged",
+        "i traced",
+    )
+    decision_markers = (
+        "decided",
+        "chose",
+        "trade-off",
+        "tradeoff",
+        "because",
+        "due to",
+        "instead of",
+    )
+    result_markers = (
+        "result",
+        "outcome",
+        "reduced",
+        "improved",
+        "increased",
+        "decreased",
+        "latency",
+        "throughput",
+        "impact",
+        "metric",
+        "%",
+    )
+    has_steps = any(m in lowered for m in step_markers)
+    has_decision = any(m in lowered for m in decision_markers)
+    has_result = any(m in lowered for m in result_markers) or bool(re.search(r"\b\d+(?:\.\d+)?%?\b", cleaned))
+    depth_ok = len(words) >= 22 and has_steps and has_decision and has_result
+    return {
+        "word_count": len(words),
+        "has_steps": has_steps,
+        "has_decision": has_decision,
+        "has_result": has_result,
+        "depth_ok": depth_ok,
+    }
+
+
 def _extract_keywords(text: str, limit: int = 3) -> list[str]:
     tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{3,}", (text or "").lower())
     stop = {
@@ -135,27 +185,32 @@ def _answer_signal(text: str) -> dict:
     has_metric = bool(re.search(r"\b\d+(\.\d+)?%?\b", cleaned))
     action_verbs = ("implemented", "designed", "debugged", "optimized", "migrated", "built", "deployed", "measured")
     has_action = any(v in lowered for v in action_verbs)
+    depth = _evaluate_answer_depth(cleaned)
     return {
         "word_count": len(words),
         "has_metric": has_metric,
         "has_action_verbs": has_action,
         "is_very_short": len(words) < 12,
         "is_vague": len(words) < 20 or not has_action,
+        "depth_ok": bool(depth["depth_ok"]),
+        "has_steps": bool(depth["has_steps"]),
+        "has_decision": bool(depth["has_decision"]),
+        "has_result": bool(depth["has_result"]),
     }
 
 
 def _infer_interview_stage(cleaned_history: list[dict]) -> str:
-    candidate_turns = [t for t in cleaned_history if t.get("role") == "candidate"]
-    answered = len(candidate_turns)
-    if answered <= 1:
+    assistant_questions = [t for t in cleaned_history if t.get("role") == "assistant"]
+    q_count = len(assistant_questions)
+    if q_count <= 1:
         return "intro"
-    if answered <= 3:
-        return "project_deep_dive"
-    if answered <= 6:
-        return "technical_depth"
-    if answered <= 8:
-        return "system_design_tradeoffs"
-    return "ownership_behavioral"
+    if q_count <= 4:
+        return "deep_dive"
+    if q_count <= 7:
+        return "stress_test"
+    if q_count <= 10:
+        return "behavioral"
+    return "close"
 
 
 def _plan_competency_ladder() -> list[str]:
@@ -165,14 +220,25 @@ def _plan_competency_ladder() -> list[str]:
         "debugging_root_cause",
         "performance_tradeoffs",
         "system_design_scale",
+        "stress_under_constraints",
         "ownership_communication",
+        "behavioral_judgment",
+        "closing_reflection",
     ]
 
 
 def _determine_target_competency(cleaned_history: list[dict]) -> str:
+    stage = _infer_interview_stage(cleaned_history)
+    stage_default = {
+        "intro": "role_fit_intro",
+        "deep_dive": "hands_on_implementation",
+        "stress_test": "stress_under_constraints",
+        "behavioral": "behavioral_judgment",
+        "close": "closing_reflection",
+    }
     candidate_answers = [str(t.get("content") or "").lower() for t in cleaned_history if t.get("role") == "candidate"]
     if not candidate_answers:
-        return "role_fit_intro"
+        return stage_default.get(stage, "role_fit_intro")
     text = " ".join(candidate_answers[-8:])
     signals = {
         "role_fit_intro": ("introduce", "background", "experience"),
@@ -180,7 +246,10 @@ def _determine_target_competency(cleaned_history: list[dict]) -> str:
         "debugging_root_cause": ("debug", "issue", "incident", "root cause", "logs"),
         "performance_tradeoffs": ("latency", "throughput", "cache", "optimize", "trade-off", "tradeoff"),
         "system_design_scale": ("scale", "architecture", "distributed", "queue", "partition"),
+        "stress_under_constraints": ("deadline", "incident", "pressure", "on-call", "downtime", "rollback"),
         "ownership_communication": ("stakeholder", "team", "ownership", "conflict", "decision"),
+        "behavioral_judgment": ("feedback", "mistake", "learned", "collaborate", "mentor"),
+        "closing_reflection": ("improve", "next time", "reflection", "lessons"),
     }
     covered = set()
     for key, words in signals.items():
@@ -189,7 +258,7 @@ def _determine_target_competency(cleaned_history: list[dict]) -> str:
     for step in _plan_competency_ladder():
         if step not in covered:
             return step
-    return "ownership_communication"
+    return stage_default.get(stage, "ownership_communication")
 
 
 def _tokenize_meaningful(text: str) -> set[str]:
@@ -349,7 +418,7 @@ def _fallback_next_question(cleaned_history: list[dict], role_title: str, parsed
                     f"Good context. If traffic suddenly 10x on {kws[0]}, what would break first, "
                     "and how would you redesign it step by step?"
                 )
-            if stage in {"intro", "project_deep_dive"}:
+            if stage in {"intro", "deep_dive"}:
                 return (
                     f"Thanks, that's helpful. On {kws[0]}"
                     + (f" and {kws[1]}" if len(kws) > 1 else "")
@@ -492,28 +561,45 @@ def _determine_main_state(cleaned_history: list[dict], main_questions: list[str]
 
 
 def _chat_json(settings, prompt: dict, schema_key: str, temperature: float, max_tokens: int, system_msg: str) -> str:
-    body = {
-        "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": json.dumps(prompt)},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-    }
-    with httpx.Client(timeout=10) as client:
-        resp = client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-            json=body,
-        )
-        resp.raise_for_status()
-        parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
-        value = str(parsed.get(schema_key) or "").strip()
-        if not value:
-            raise ValueError(f"{schema_key} was empty in model response")
-        return value
+    models: list[str] = []
+    primary = str(getattr(settings, "openai_model", "") or "").strip()
+    if primary:
+        models.append(primary)
+    fallback = str(getattr(settings, "openai_fallback_model", "") or "").strip()
+    if fallback and fallback not in models:
+        models.append(fallback)
+    if not models:
+        raise ValueError("No model configured")
+
+    last_exc: Exception | None = None
+    with httpx.Client(timeout=7.5) as client:
+        for model in models:
+            body = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": json.dumps(prompt)},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                resp = client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
+                value = str(parsed.get(schema_key) or "").strip()
+                if not value:
+                    raise ValueError(f"{schema_key} was empty in model response")
+                return value
+            except Exception as exc:
+                last_exc = exc
+                continue
+    raise last_exc or ValueError("Model call failed")
 
 
 def _generate_ai_intro_question(
@@ -675,6 +761,7 @@ def _generate_ai_next_question(
             "answer_signal": signal,
         },
         "interview_stage": stage,
+        "enforced_flow": ["intro", "deep_dive", "stress_test", "behavioral", "close"],
         "target_competency": target_competency,
         "interviewer_rubric": [
             "prioritize evidence over claims",
@@ -696,6 +783,9 @@ def _generate_ai_next_question(
             "Bias the next question toward target_competency",
             "Prefer specific implementation details over theory",
             "Keep topic continuity: do not switch domains abruptly unless previous answer is fully complete",
+            "No topic jump: if depth is insufficient, keep probing same topic",
+            "In stress_test stage, challenge constraints and failure modes",
+            "In behavioral stage, probe ownership, communication, and decisions under ambiguity",
             "Keep concise and high-signal (max 35 words)",
         ],
         "output_schema": {"question": "string"},
@@ -797,6 +887,26 @@ def _generate_ai_incomplete_probe(*, settings, last_question: str, last_candidat
         "You are a senior interviewer. Keep continuity and ask one concise follow-up. Return strict JSON.",
     )
     return q, "api_success"
+
+
+def _build_clarify_prompt(last_question: str, last_answer: str) -> str:
+    depth = _evaluate_answer_depth(last_answer)
+    missing: list[str] = []
+    if not depth["has_steps"]:
+        missing.append("the exact steps")
+    if not depth["has_decision"]:
+        missing.append("the decision/trade-off")
+    if not depth["has_result"]:
+        missing.append("the measurable result")
+    if not missing:
+        return "Could you add one concrete example with your exact steps, decision, and result?"
+    if len(missing) == 1:
+        need = missing[0]
+    else:
+        need = ", ".join(missing[:-1]) + f", and {missing[-1]}"
+    if last_question:
+        return f"Before we move on, please finish the same answer and include {need}."
+    return f"Please answer with {need} so I can evaluate it fairly."
 
 
 def generate_interview_question(
@@ -921,8 +1031,33 @@ def generate_interview_question(
                     pass
 
     asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
+    stage = _infer_interview_stage(cleaned_history)
     _ = _sanitize_resume_text(resume_text)
     _ = resume_skills
+
+    if last_candidate_turn and last_assistant_question:
+        depth = _evaluate_answer_depth(last_candidate_turn)
+        if not depth["depth_ok"] and depth["word_count"] >= 8:
+            if use_ai:
+                try:
+                    probe_q, probe_meta = _generate_ai_precision_probe(
+                        settings=settings,
+                        role_title=role_title,
+                        target_competency=target_competency,
+                        last_question=last_assistant_question,
+                        last_candidate_answer=last_candidate_turn,
+                    )
+                    refined_probe = _postprocess_question(
+                        probe_q,
+                        cleaned_history,
+                        parsed_sections,
+                        target_competency,
+                        role_title,
+                    )
+                    return refined_probe, f"source=answer_depth_gate state=hold {probe_meta}"
+                except Exception:
+                    pass
+            return _build_clarify_prompt(last_assistant_question, last_candidate_turn), "source=answer_depth_gate state=hold fallback=local"
 
     if not asked_questions:
         if use_ai:
@@ -955,6 +1090,15 @@ def generate_interview_question(
             role_title,
         )
         return refined_intro, "source=intro state=interview_start fallback=local"
+
+    if len(asked_questions) >= 14:
+        return INTERVIEW_COMPLETE_SENTINEL, "source=flow_guard state=close"
+
+    if stage == "close":
+        return (
+            "Before we close, what is one technical decision you would improve in your past project and why?",
+            "source=flow_guard state=closing_prompt",
+        )
 
     if use_ai:
         try:

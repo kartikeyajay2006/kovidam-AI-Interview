@@ -40,6 +40,7 @@ type FaceDetectorLike = {
 
 const PRIMARY_API = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy/api/v1";
 const FALLBACK_API = "http://127.0.0.1:8000/api/v1";
+const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE_URL || "";
 const TURN_QUEUE_KEY_PREFIX = "kovi_turn_queue_";
 const SECURITY_QUEUE_KEY_PREFIX = "kovi_security_queue_";
 
@@ -59,6 +60,18 @@ async function readJsonSafe(res: Response): Promise<{ ok: true; data: any } | { 
   }
   const text = await res.text();
   return { ok: false, detail: text.slice(0, 200) || `HTTP ${res.status}` };
+}
+
+function buildRealtimeSocketUrl(interviewId: string): string {
+  if (WS_BASE) {
+    const normalized = WS_BASE.replace(/\/+$/, "");
+    return `${normalized}/api/v1/ws/interviews/${interviewId}`;
+  }
+  if (typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://localhost:8000/api/v1/ws/interviews/${interviewId}`;
+  }
+  return `ws://localhost:8000/api/v1/ws/interviews/${interviewId}`;
 }
 
 const NAV_ITEMS = ["Home", "Interviews", "Analytics", "Reports", "Settings", "Profile"];
@@ -128,6 +141,10 @@ export default function InterviewLauncher({
   const [micVerificationError, setMicVerificationError] = useState("");
   const [micVerificationScore, setMicVerificationScore] = useState(0);
   const [micLevel, setMicLevel] = useState(0);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [voiceprintBaseline, setVoiceprintBaseline] = useState<number[] | null>(null);
+  const [voiceMismatchSuspicious, setVoiceMismatchSuspicious] = useState(false);
+  const [securityChallenge, setSecurityChallenge] = useState<{ prompt: string; expiresAt: number } | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const faceDetectorRef = useRef<FaceDetectorLike | null>(null);
   const noSpeechRetryRef = useRef(0);
@@ -153,6 +170,8 @@ export default function InterviewLauncher({
   const prevScreenPixelsRef = useRef<Uint8ClampedArray | null>(null);
   const screenCheckIntervalRef = useRef<number | null>(null);
   const screenChangeBurstRef = useRef<{ count: number; windowStartMs: number }>({ count: 0, windowStartMs: 0 });
+  const screenFreezeCountRef = useRef(0);
+  const screenBlackCountRef = useRef(0);
   const elapsedSecRef = useRef(0);
   const statusRef = useRef(initialStatus);
   const terminatingForSecurityRef = useRef(false);
@@ -164,6 +183,13 @@ export default function InterviewLauncher({
   const micAudioContextRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const micMeterRAFRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsAwaitingNextQuestionRef = useRef(false);
+  const wsFallbackTimerRef = useRef<number | null>(null);
+  const wsRetryCountRef = useRef(0);
+  const wsIgnoreNextQuestionRef = useRef(false);
+  const securityChallengeTimerRef = useRef<number | null>(null);
+  const incompleteAnswerCountRef = useRef(0);
 
   function clearSpeechSilenceTimer() {
     if (speechSilenceTimerRef.current) {
@@ -232,6 +258,90 @@ export default function InterviewLauncher({
   }, [status]);
 
   useEffect(() => {
+    if (status !== "in_progress") {
+      if (wsFallbackTimerRef.current) {
+        window.clearTimeout(wsFallbackTimerRef.current);
+        wsFallbackTimerRef.current = null;
+      }
+      wsAwaitingNextQuestionRef.current = false;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+      return;
+    }
+
+    let closedByCleanup = false;
+    const socket = new WebSocket(buildRealtimeSocketUrl(interviewId));
+    wsRef.current = socket;
+
+    socket.onopen = () => {
+      wsRetryCountRef.current = 0;
+      setWsConnected(true);
+    };
+    socket.onmessage = (evt) => {
+      try {
+        const payload = JSON.parse(evt.data || "{}");
+        const type = String(payload.type || "");
+        if (type === "next_question") {
+          if (wsIgnoreNextQuestionRef.current) {
+            wsIgnoreNextQuestionRef.current = false;
+            return;
+          }
+          wsAwaitingNextQuestionRef.current = false;
+          if (wsFallbackTimerRef.current) {
+            window.clearTimeout(wsFallbackTimerRef.current);
+            wsFallbackTimerRef.current = null;
+          }
+          const q = String(payload.question || "").trim();
+          if (!q) return;
+          setLoadingQuestion(false);
+          setHistory((prev) => {
+            const next = [...prev, { role: "assistant" as const, source: "system" as const, content: q }];
+            historyRef.current = next;
+            return next;
+          });
+          setMessage("AI interviewer is speaking...");
+          speak(q);
+          void loadTurns();
+          return;
+        }
+        if (type === "interview_completed") {
+          wsAwaitingNextQuestionRef.current = false;
+          setLoadingQuestion(false);
+          setMessage(String(payload.detail || "Interview completed."));
+          setStatus("completed");
+          return;
+        }
+      } catch {
+        // no-op
+      }
+    };
+    socket.onclose = () => {
+      setWsConnected(false);
+      if (!closedByCleanup && wsRetryCountRef.current < 2 && statusRef.current === "in_progress") {
+        wsRetryCountRef.current += 1;
+        window.setTimeout(() => {
+          setWsConnected(false);
+        }, 600 * wsRetryCountRef.current);
+      }
+    };
+    socket.onerror = () => {
+      setWsConnected(false);
+    };
+
+    return () => {
+      closedByCleanup = true;
+      if (wsRef.current === socket) {
+        wsRef.current = null;
+      }
+      socket.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, interviewId]);
+
+  useEffect(() => {
     micLevelRef.current = micLevel;
   }, [micLevel]);
 
@@ -242,6 +352,40 @@ export default function InterviewLauncher({
   useEffect(() => {
     cameraFreezeSuspiciousRef.current = cameraFreezeSuspicious;
   }, [cameraFreezeSuspicious]);
+
+  useEffect(() => {
+    if (status !== "in_progress" || !listening || !voiceprintBaseline || cheatingTagged) {
+      setVoiceMismatchSuspicious(false);
+      return;
+    }
+    const id = window.setInterval(() => {
+      const probe = getVoiceprintVector();
+      if (!probe) return;
+      const similarity = cosineSimilarity(voiceprintBaseline, probe);
+      if (similarity < 0.6) {
+        setVoiceMismatchSuspicious(true);
+        logSecurityEvent(
+          "Voiceprint mismatch detected during live response.",
+          "voice_mismatch_detected",
+          "high",
+          { similarity: Number(similarity.toFixed(3)) }
+        );
+      } else {
+        setVoiceMismatchSuspicious(false);
+      }
+    }, 1800);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, listening, voiceprintBaseline, cheatingTagged]);
+
+  useEffect(() => {
+    if (status !== "in_progress" || cheatingTagged || !voiceMismatchSuspicious) return;
+    terminateInterviewForSecurity(
+      "Cheating detected: voice identity mismatch against verified candidate.",
+      "voice_mismatch_timeout"
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, cheatingTagged, voiceMismatchSuspicious]);
 
   useEffect(() => {
     const onOnline = () => setInternetOnline(true);
@@ -268,6 +412,38 @@ export default function InterviewLauncher({
     const id = window.setInterval(() => setElapsedSec((v) => v + 1), 1000);
     return () => window.clearInterval(id);
   }, [status]);
+
+  useEffect(() => {
+    if (status !== "in_progress" || cheatingTagged) return;
+    if (elapsedSec < 180 || elapsedSec % 150 !== 0 || securityChallenge) return;
+    const prompts = [
+      "Liveness check: turn your face slightly left, then click challenge complete.",
+      "Security check: keep only your face in frame and click challenge complete.",
+    ];
+    const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+    const expiresAt = Date.now() + 20000;
+    setSecurityChallenge({ prompt, expiresAt });
+    setMessage(prompt);
+    logSecurityEvent("Random security challenge issued.", "random_security_challenge_issued", "medium", { prompt });
+    if (securityChallengeTimerRef.current) {
+      window.clearTimeout(securityChallengeTimerRef.current);
+    }
+    securityChallengeTimerRef.current = window.setTimeout(() => {
+      if (statusRef.current !== "in_progress") return;
+      terminateInterviewForSecurity(
+        "Cheating detected: random security challenge timeout.",
+        "random_security_challenge_timeout"
+      );
+    }, 20000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, cheatingTagged, elapsedSec, securityChallenge]);
+
+  useEffect(() => {
+    if (!securityChallenge && securityChallengeTimerRef.current) {
+      window.clearTimeout(securityChallengeTimerRef.current);
+      securityChallengeTimerRef.current = null;
+    }
+  }, [securityChallenge]);
 
   useEffect(() => {
     const nav = navigator as Navigator & { connection?: { downlink?: number; rtt?: number; effectiveType?: string; addEventListener?: (event: string, cb: EventListener) => void; removeEventListener?: (event: string, cb: EventListener) => void } };
@@ -453,6 +629,9 @@ export default function InterviewLauncher({
       if (lipSyncTimerRef.current) window.clearInterval(lipSyncTimerRef.current);
       if (lipSyncCheckIntervalRef.current) window.clearInterval(lipSyncCheckIntervalRef.current);
       if (cameraFreezeTimerRef.current) window.clearInterval(cameraFreezeTimerRef.current);
+      if (securityChallengeTimerRef.current) window.clearTimeout(securityChallengeTimerRef.current);
+      if (wsFallbackTimerRef.current) window.clearTimeout(wsFallbackTimerRef.current);
+      wsRef.current?.close();
       userStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     };
@@ -736,7 +915,42 @@ export default function InterviewLauncher({
         }
         const meanDelta = deltaSum / Math.max(1, samples);
         const changedRatio = changedSamples / Math.max(1, samples);
-        if (meanDelta > 10.5 || changedRatio > 0.24) {
+        const avgBrightness = imageData.reduce((acc, _, idx) => {
+          if (idx % 4 !== 0) return acc;
+          const r = imageData[idx];
+          const g = imageData[idx + 1];
+          const b = imageData[idx + 2];
+          return acc + (r * 0.299 + g * 0.587 + b * 0.114);
+        }, 0) / Math.max(1, imageData.length / 4);
+
+        if (avgBrightness < 7) {
+          screenBlackCountRef.current += 1;
+          if (screenBlackCountRef.current >= 3) {
+            terminateInterviewForSecurity(
+              "Cheating detected: blacked-out screen share feed.",
+              "screen_black_frame_timeout",
+              { avgBrightness: Number(avgBrightness.toFixed(2)) }
+            );
+          }
+        } else {
+          screenBlackCountRef.current = Math.max(0, screenBlackCountRef.current - 1);
+        }
+
+        if (meanDelta < 0.22) {
+          screenFreezeCountRef.current += 1;
+          if (screenFreezeCountRef.current >= 6) {
+            logSecurityEvent(
+              "Screen feed looks frozen or static for an extended duration.",
+              "screen_frozen_warning",
+              "high",
+              { meanDelta: Number(meanDelta.toFixed(3)) }
+            );
+          }
+        } else {
+          screenFreezeCountRef.current = 0;
+        }
+
+        if (meanDelta > 9.2 || changedRatio > 0.2) {
           setScreenChanged(true);
           logSecurityEvent(
             "Screen content changed during interview.",
@@ -746,13 +960,13 @@ export default function InterviewLauncher({
           );
           const nowMs = Date.now();
           const burst = screenChangeBurstRef.current;
-          if (!burst.windowStartMs || nowMs - burst.windowStartMs > 30000) {
+          if (!burst.windowStartMs || nowMs - burst.windowStartMs > 20000) {
             screenChangeBurstRef.current = { count: 1, windowStartMs: nowMs };
           } else {
             screenChangeBurstRef.current = { count: burst.count + 1, windowStartMs: burst.windowStartMs };
           }
-          if (screenChangeBurstRef.current.count >= 3 && screenViolationTimerRef.current === null) {
-            let remaining = 10;
+          if (screenChangeBurstRef.current.count >= 2 && screenViolationTimerRef.current === null) {
+            let remaining = 8;
             setScreenViolationCountdown(remaining);
             screenViolationTimerRef.current = window.setInterval(() => {
               remaining -= 1;
@@ -1003,6 +1217,21 @@ export default function InterviewLauncher({
     writeQueuedSecurityEvents(queued);
   }
 
+  async function buildEventEvidence(
+    severity: "info" | "low" | "medium" | "high" | "critical",
+    eventType: string,
+    base: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const enriched: Record<string, unknown> = { ...base };
+    const captureSnapshot = severity === "high" || severity === "critical" || eventType.includes("timeout") || eventType.includes("detected");
+    if (!captureSnapshot) return enriched;
+    const camera = captureVideoSnapshot(userVideoRef.current, 320, 240);
+    if (camera) enriched.camera_snapshot = camera;
+    const screen = captureScreenSnapshot();
+    if (screen) enriched.screen_snapshot = screen;
+    return enriched;
+  }
+
   async function saveSecurityEvent(
     eventType: string,
     details: string,
@@ -1094,8 +1323,10 @@ export default function InterviewLauncher({
     lastEventLoggedAtRef.current[eventType] = nowMs;
     const now = new Date().toLocaleTimeString();
     setSecurityEvents((prev) => [{ time: now, event, eventType, severity }, ...prev].slice(0, 20));
-    void saveSecurityEvent(eventType, event, severity, evidence).then((ok) => {
-      if (!ok) queueSecurityEvent(eventType, severity, event, evidence);
+    void buildEventEvidence(severity, eventType, evidence).then((fullEvidence) => {
+      void saveSecurityEvent(eventType, event, severity, fullEvidence).then((ok) => {
+        if (!ok) queueSecurityEvent(eventType, severity, event, fullEvidence);
+      });
     });
   }
 
@@ -1120,6 +1351,112 @@ export default function InterviewLauncher({
     const actualSet = new Set(actualTokens);
     const matched = expectedTokens.filter((t) => actualSet.has(t)).length;
     return matched / expectedTokens.length;
+  }
+
+  function evaluateAnswerDepth(text: string, currentQuestion: string = ""): {
+    words: number;
+    hasSteps: boolean;
+    hasDecision: boolean;
+    hasResult: boolean;
+    hasProjectSignal: boolean;
+    depthOk: boolean;
+    missing: string[];
+  } {
+    const cleaned = (text || "").trim().toLowerCase();
+    const question = (currentQuestion || "").trim().toLowerCase();
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    const hasSteps = /(first|then|next|after|finally|step)/.test(cleaned);
+    const hasDecision = /(because|decided|chose|trade.?off|instead)/.test(cleaned);
+    const hasResult = /(result|outcome|improved|reduced|increased|%|\d+)/.test(cleaned);
+    const hasProjectSignal = /(project|built|build|implemented|worked|experience|system|agent|backend|frontend|api)/.test(
+      cleaned
+    );
+
+    const isIntro = /(introduce|brief introduction|about yourself|background)/.test(question);
+    const isChallenge = /(challenge|resolved|debug|issue|problem|fix)/.test(question);
+    const isTradeoffHeavy = /(trade.?off|decision|optimiz|latency|performance|scale)/.test(question);
+
+    let minWords = 14;
+    let needSteps = false;
+    let needDecision = false;
+    let needResult = false;
+    let needProjectSignal = false;
+
+    if (isIntro) {
+      minWords = 12;
+      needProjectSignal = true;
+    } else if (isTradeoffHeavy) {
+      minWords = 16;
+      needDecision = true;
+      needResult = true;
+      needSteps = true;
+    } else if (isChallenge) {
+      minWords = 16;
+      needSteps = true;
+      needResult = true;
+    } else {
+      minWords = 14;
+    }
+
+    const missing: string[] = [];
+    if (words.length < minWords) missing.push("a bit more detail");
+    if (needProjectSignal && !hasProjectSignal) missing.push("one concrete project/experience");
+    if (needSteps && !hasSteps) missing.push("the exact steps you took");
+    if (needDecision && !hasDecision) missing.push("the key decision or trade-off");
+    if (needResult && !hasResult) missing.push("the measurable result");
+
+    const baseSignals = [hasSteps, hasDecision, hasResult, hasProjectSignal].filter(Boolean).length;
+    const genericPass = words.length >= minWords && baseSignals >= 2;
+    const targetedPass = missing.length === 0;
+    const depthOk = isIntro || isChallenge || isTradeoffHeavy ? targetedPass : genericPass;
+
+    return {
+      words: words.length,
+      hasSteps,
+      hasDecision,
+      hasResult,
+      hasProjectSignal,
+      depthOk,
+      missing,
+    };
+  }
+
+  function answerHasDepth(text: string, currentQuestion: string = ""): boolean {
+    return evaluateAnswerDepth(text, currentQuestion).depthOk;
+  }
+
+  function buildDepthFollowup(answer: string, currentQuestion: string): string {
+    const depth = evaluateAnswerDepth(answer, currentQuestion);
+    const missing = [...depth.missing].filter((m) => m !== "a bit more detail");
+
+    if (missing.length === 0) {
+      return "Good start. Please add one concrete example with clear implementation details so I can evaluate better.";
+    }
+    const missingText =
+      missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]}`;
+    const prefix =
+      incompleteAnswerCountRef.current >= 2
+        ? "Let's complete this answer properly before moving on."
+        : "Thanks, stay on this same question.";
+    return `${prefix} Please include ${missingText}.`;
+  }
+
+  function isFrustrationReply(text: string): boolean {
+    const cleaned = (text || "").toLowerCase();
+    return /(already|again and again|same question|i answered|why asking)/.test(cleaned);
+  }
+
+  async function speakDepthFollowup(answer: string, currentQuestion: string) {
+    const followup = buildDepthFollowup(answer, currentQuestion);
+    incompleteAnswerCountRef.current += 1;
+    setMessage(followup);
+    setHistory((prev) => {
+      const next = [...prev, { role: "assistant" as const, source: "system" as const, content: followup }];
+      historyRef.current = next;
+      return next;
+    });
+    void saveTurn("assistant", followup, "system");
+    speak(followup);
   }
 
   function nextMicPhrase() {
@@ -1161,6 +1498,61 @@ export default function InterviewLauncher({
       prevImg.src = prevDataUrl;
       nextImg.src = nextDataUrl;
     });
+  }
+
+  function getVoiceprintVector(): number[] | null {
+    const analyser = micAnalyserRef.current;
+    if (!analyser) return null;
+    const bins = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(bins);
+    const segment = Math.max(1, Math.floor(bins.length / 8));
+    const vector: number[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      let sum = 0;
+      let count = 0;
+      for (let j = i * segment; j < Math.min(bins.length, (i + 1) * segment); j += 1) {
+        sum += bins[j];
+        count += 1;
+      }
+      vector.push(count ? sum / count : 0);
+    }
+    return vector;
+  }
+
+  function cosineSimilarity(a: number[], b: number[]): number {
+    if (!a.length || !b.length || a.length !== b.length) return 0;
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      dot += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    if (!normA || !normB) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  function captureVideoSnapshot(video: HTMLVideoElement | null, width: number, height: number): string {
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return "";
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "";
+    ctx.drawImage(video, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", 0.75);
+  }
+
+  function captureScreenSnapshot(): string {
+    const stream = screenStreamRef.current;
+    if (!stream) return "";
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    video.play().catch(() => undefined);
+    return captureVideoSnapshot(video, 320, 180);
   }
 
   function stopMicLevelMonitor() {
@@ -1606,6 +1998,33 @@ export default function InterviewLauncher({
     setMessage("Camera snapshots cleared. Capture two photos again.");
   }
 
+  async function completeSecurityChallenge() {
+    if (!securityChallenge) return;
+    const current = captureVideoSnapshot(userVideoRef.current, 320, 240);
+    let diff = 10;
+    const baseline = cameraSnapshots[cameraSnapshots.length - 1];
+    if (baseline && current) {
+      diff = await snapshotDifferenceScore(baseline, current);
+    }
+    const pass = faceVisible && !multipleFaces && diff > 4.2;
+    if (pass) {
+      setSecurityChallenge(null);
+      setMessage("Security challenge passed.");
+      logSecurityEvent(
+        "Random liveness challenge passed.",
+        "random_security_challenge_passed",
+        "info",
+        { diff: Number(diff.toFixed(2)) }
+      );
+      return;
+    }
+    terminateInterviewForSecurity(
+      "Cheating detected: random liveness/security challenge failed.",
+      "random_security_challenge_failed",
+      { diff: Number(diff.toFixed(2)), faceVisible, multipleFaces }
+    );
+  }
+
   function startMicVerification() {
     if (micVerificationInProgress) return;
     if (!micOn) {
@@ -1630,6 +2049,11 @@ export default function InterviewLauncher({
       const score = speechMatchScore(micVerificationPhrase, transcript);
       setMicVerificationScore(score);
       if (score >= 0.65) {
+        const baseline = getVoiceprintVector();
+        if (baseline && baseline.length) {
+          setVoiceprintBaseline(baseline);
+          logSecurityEvent("Voiceprint baseline captured during microphone verification.", "voiceprint_baseline_captured", "info");
+        }
         setMicIdentityVerified(true);
         setSetupStep("screen");
         setMessage("Microphone voice verification passed. Proceed to screen share.");
@@ -1683,7 +2107,21 @@ export default function InterviewLauncher({
       setStatus(payload.status || "in_progress");
       logSecurityEvent("Interview session started.", "interview_started", "info");
       const existingTurns = await loadTurns();
-      await fetchNextQuestion(existingTurns);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        setLoadingQuestion(true);
+        wsAwaitingNextQuestionRef.current = true;
+        wsIgnoreNextQuestionRef.current = false;
+        wsRef.current.send(JSON.stringify({ type: "request_next" }));
+        if (wsFallbackTimerRef.current) window.clearTimeout(wsFallbackTimerRef.current);
+        wsFallbackTimerRef.current = window.setTimeout(() => {
+          if (!wsAwaitingNextQuestionRef.current) return;
+          wsAwaitingNextQuestionRef.current = false;
+          wsIgnoreNextQuestionRef.current = true;
+          void fetchNextQuestion(existingTurns);
+        }, 1500);
+      } else {
+        await fetchNextQuestion(existingTurns);
+      }
     } catch (err) {
       setMessage(`Failed to start interview: ${(err as Error).message}`);
     }
@@ -1709,10 +2147,16 @@ export default function InterviewLauncher({
       setMessage("No answer detected. Please speak or type your response.");
       return;
     }
-    const words = transcript.split(/\s+/).filter(Boolean);
-    const tooShort = words.length < 8;
-
-    const savedCandidate = await saveTurn("candidate", transcript, source);
+    const latestQuestion =
+      [...historyRef.current].reverse().find((t) => t.role === "assistant")?.content || currentQuestion;
+    const depth = evaluateAnswerDepth(transcript, latestQuestion);
+    const tooShort = depth.words < 8;
+    const frustrated = isFrustrationReply(transcript);
+    const canUseWs = wsRef.current && wsRef.current.readyState === WebSocket.OPEN;
+    let savedCandidate: Turn | null = null;
+    if (!canUseWs) {
+      savedCandidate = await saveTurn("candidate", transcript, source);
+    }
     const candidateTurn: Turn = savedCandidate || { role: "candidate", source, content: transcript };
     const updated: Turn[] = [...historyRef.current, candidateTurn];
     historyRef.current = updated;
@@ -1734,10 +2178,47 @@ export default function InterviewLauncher({
       });
     }
     if (tooShort) {
-      setMessage("Your answer seems incomplete. Please continue with more details before moving to next question.");
+      await speakDepthFollowup(transcript, latestQuestion);
       return;
     }
+    if (!answerHasDepth(transcript, latestQuestion)) {
+      const shouldAdvance =
+        (incompleteAnswerCountRef.current >= 2 && depth.words >= 14) ||
+        (frustrated && incompleteAnswerCountRef.current >= 1);
+      if (shouldAdvance) {
+        const ack =
+          "Thanks, understood. I will move ahead and evaluate this response with lower confidence due to limited structure.";
+        setMessage(ack);
+        setHistory((prev) => {
+          const next = [...prev, { role: "assistant" as const, source: "system" as const, content: ack }];
+          historyRef.current = next;
+          return next;
+        });
+        void saveTurn("assistant", ack, "system");
+        speak(ack);
+        incompleteAnswerCountRef.current = 0;
+      } else {
+        await speakDepthFollowup(transcript, latestQuestion);
+        return;
+      }
+    } else {
+      incompleteAnswerCountRef.current = 0;
+    }
     setMessage("Answer captured. AI is analyzing and preparing follow-up...");
+    if (canUseWs && wsRef.current) {
+      setLoadingQuestion(true);
+      wsAwaitingNextQuestionRef.current = true;
+      wsIgnoreNextQuestionRef.current = false;
+      wsRef.current.send(JSON.stringify({ type: "candidate_answer", content: transcript, source }));
+      if (wsFallbackTimerRef.current) window.clearTimeout(wsFallbackTimerRef.current);
+      wsFallbackTimerRef.current = window.setTimeout(() => {
+        if (!wsAwaitingNextQuestionRef.current) return;
+        wsAwaitingNextQuestionRef.current = false;
+        wsIgnoreNextQuestionRef.current = true;
+        void fetchNextQuestion(updated);
+      }, 1500);
+      return;
+    }
     await fetchNextQuestion(updated);
   }
 
@@ -1973,6 +2454,14 @@ export default function InterviewLauncher({
         return;
       }
       setStatus(payload.status || "completed");
+      if (wsFallbackTimerRef.current) {
+        window.clearTimeout(wsFallbackTimerRef.current);
+        wsFallbackTimerRef.current = null;
+      }
+      wsAwaitingNextQuestionRef.current = false;
+      wsRef.current?.close();
+      wsRef.current = null;
+      setWsConnected(false);
       stopListening();
       window.speechSynthesis.cancel();
       userStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -2713,11 +3202,13 @@ export default function InterviewLauncher({
                     { label: "Camera Active", ok: cameraOn, icon: "📷" },
                     { label: "Camera Motion", ok: !cameraFreezeSuspicious, icon: "🎥" },
                     { label: "Microphone Active", ok: micOn, icon: "🎤" },
+                    { label: "Voice Match", ok: !voiceMismatchSuspicious, icon: "🧬" },
                     { label: "Speech-Lip Sync", ok: !lipSyncSuspicious, icon: "🗣" },
                     { label: "Screen Sharing", ok: sharingScreen, icon: "🖥" },
                     { label: "Screen Stability", ok: screenViolationCountdown === null, icon: "🧭" },
                     { label: "Internet Stable", ok: internetQuality === "good", icon: "🌐" },
                     { label: "Tab Focus", ok: tabCountdown === null, icon: "🖱" },
+                    { label: "Realtime Link", ok: wsConnected, icon: "⚡" },
                   ].map(({ label, ok, icon }) => (
                     <div key={label} className="flex items-center justify-between rounded-lg bg-[#0a0a12] border border-white/5 px-3 py-2">
                       <div className="flex items-center gap-2 text-xs font-medium text-slate-300">
@@ -2754,6 +3245,23 @@ export default function InterviewLauncher({
                   <p className="mt-2 text-xs text-slate-400 bg-[#0a0a12] border border-white/5 rounded-lg p-3">AI-generated from your resume context. Expects depth, trade-offs, and real examples.</p>
                 )}
               </div>
+
+              {securityChallenge && (
+                <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-amber-300">Random Security Challenge</p>
+                  <p className="mt-2 text-sm text-amber-100">{securityChallenge.prompt}</p>
+                  <p className="mt-1 text-xs text-amber-300">
+                    Complete within {Math.max(0, Math.floor((securityChallenge.expiresAt - Date.now()) / 1000))}s
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void completeSecurityChallenge()}
+                    className="mt-3 w-full rounded-xl border border-amber-400/40 bg-amber-500/20 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-500/30"
+                  >
+                    Challenge Completed
+                  </button>
+                </div>
+              )}
 
               {/* Voice Control */}
               <div className="rounded-2xl border border-white/10 bg-[#12121a] p-5 shadow-sm">

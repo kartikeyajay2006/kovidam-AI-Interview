@@ -171,9 +171,38 @@ class InterviewSecurityEventOut(BaseModel):
     interview_id: UUID
     event_type: str
     severity: str
+    event_index: int = 0
+    prev_hash: str = ""
+    event_hash: str = ""
     details: str
     evidence_json: str
     created_at: datetime
+
+
+class InterviewEvidenceSnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    interview_id: UUID
+    security_event_id: UUID | None = None
+    snapshot_type: str
+    image_data_url: str
+    image_hash: str
+    created_at: datetime
+
+
+class CompetencyScore(BaseModel):
+    competency: str
+    score: float
+    summary: str
+
+
+class InterviewReviewCopilot(BaseModel):
+    overall_recommendation: str
+    confidence: float
+    competency_scores: list[CompetencyScore]
+    red_flags: list[str]
+    evidence_links: list[str]
 
 
 class InterviewReviewFeedItem(BaseModel):
@@ -214,3 +243,17 @@ class InterviewReviewPacket(BaseModel):
     transcript: list[InterviewTurnOut]
     qna_pairs: list[InterviewQuestionReview]
     security_events: list[InterviewSecurityEventOut]
+    evidence_snapshots: list[InterviewEvidenceSnapshotOut] = []
+    copilot: InterviewReviewCopilot | None = None
+
+
+class InterviewPlaybackEntry(BaseModel):
+    timestamp: datetime
+    kind: str  # question | answer | security_event | snapshot
+    content: str
+    metadata: dict = Field(default_factory=dict)
+
+
+class InterviewPlaybackPacket(BaseModel):
+    interview_id: UUID
+    timeline: list[InterviewPlaybackEntry]

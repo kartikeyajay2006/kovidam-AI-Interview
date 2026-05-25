@@ -90,6 +90,25 @@ class InterviewSecurityEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), default="medium")
+    event_index: Mapped[int] = mapped_column(Integer, default=0)
+    prev_hash: Mapped[str] = mapped_column(String(128), default="")
+    event_hash: Mapped[str] = mapped_column(String(128), default="")
     details: Mapped[str] = mapped_column(Text, default="")
     evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class InterviewEvidenceSnapshot(Base):
+    __tablename__ = "interview_evidence_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interview_sessions.id"), nullable=False
+    )
+    security_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("interview_security_events.id"), nullable=True
+    )
+    snapshot_type: Mapped[str] = mapped_column(String(32), default="camera")  # camera | screen
+    image_data_url: Mapped[str] = mapped_column(Text, default="")
+    image_hash: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
