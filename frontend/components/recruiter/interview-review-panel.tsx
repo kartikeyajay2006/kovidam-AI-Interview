@@ -5,6 +5,19 @@ import { useEffect, useMemo, useState } from "react";
 const PRIMARY_API = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy/api/v1";
 const FALLBACK_API = "http://127.0.0.1:8000/api/v1";
 
+const SUSPICIOUS_EVENT_HINTS = [
+  "timeout",
+  "mismatch",
+  "multiple_faces",
+  "face_not_visible",
+  "screen_change",
+  "screen_share_stopped",
+  "tab_hidden",
+  "camera_freeze",
+  "voice_mismatch",
+  "challenge_failed",
+];
+
 type FeedItem = {
   interview_id: string;
   candidate_name: string;
@@ -55,6 +68,7 @@ type ReviewPacket = {
   }>;
   evidence_snapshots?: Array<{
     id: string;
+    security_event_id?: string | null;
     snapshot_type: string;
     image_data_url: string;
     image_hash: string;
@@ -99,6 +113,11 @@ export default function InterviewReviewPanel() {
   const [deletingInterviewId, setDeletingInterviewId] = useState("");
   const [playback, setPlayback] = useState<PlaybackPacket | null>(null);
   const [message, setMessage] = useState("");
+  const [severityFilter, setSeverityFilter] = useState<"all" | "critical" | "high" | "medium" | "low" | "info">("all");
+  const [eventTypeFilter, setEventTypeFilter] = useState("all");
+  const [suspiciousOnly, setSuspiciousOnly] = useState(false);
+  const [playbackKindFilter, setPlaybackKindFilter] = useState<"all" | "question" | "answer" | "security_event" | "snapshot">("all");
+  const [playbackQuery, setPlaybackQuery] = useState("");
 
   async function loadFeed() {
     try {
@@ -122,6 +141,11 @@ export default function InterviewReviewPanel() {
       }
       const data = await res.json();
       setPacket(data);
+      setSeverityFilter("all");
+      setEventTypeFilter("all");
+      setSuspiciousOnly(false);
+      setPlaybackKindFilter("all");
+      setPlaybackQuery("");
       const playbackRes = await fetchWithFallback(`/interviews/${interviewId}/playback`);
       if (playbackRes.ok) {
         const playbackData = await playbackRes.json();
@@ -158,6 +182,74 @@ export default function InterviewReviewPanel() {
     }
   }
 
+  async function copyForensicBundle() {
+    if (!packet) return;
+    const payload = {
+      interview: {
+        id: packet.interview_id,
+        candidate_name: packet.candidate_name,
+        candidate_email: packet.candidate_email,
+        job_title: packet.job_title,
+        status: packet.status,
+        integrity_score: packet.integrity_score,
+        risk_level: packet.risk_level,
+      },
+      copilot: packet.copilot || null,
+      security_events: packet.security_events,
+      evidence_snapshots: packet.evidence_snapshots || [],
+      playback: playback?.timeline || [],
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setMessage("Forensic investigation bundle copied to clipboard.");
+    } catch {
+      setMessage("Could not copy forensic bundle.");
+    }
+  }
+
+  async function copyIncidentReport() {
+    if (!packet) return;
+    const events = filteredSecurityEvents;
+    const suspicious = suspiciousEvents;
+    const topFindings = suspicious
+      .slice(0, 8)
+      .map((e, i) => `${i + 1}. [${new Date(e.created_at).toLocaleString()}] ${e.event_type} (${e.severity}) - ${e.details}`)
+      .join("\n");
+    const report = [
+      `# Interview Incident Report`,
+      ``,
+      `Candidate: ${packet.candidate_name} (${packet.candidate_email})`,
+      `Role: ${packet.job_title}`,
+      `Interview ID: ${packet.interview_id}`,
+      `Status: ${packet.status}`,
+      `Integrity: ${packet.integrity_score.toFixed(2)} (${packet.risk_level})`,
+      ``,
+      `## Security Summary`,
+      `- Critical: ${securitySummary.critical}`,
+      `- High: ${securitySummary.high}`,
+      `- Medium: ${securitySummary.medium}`,
+      `- Low: ${securitySummary.low}`,
+      `- Info: ${securitySummary.info}`,
+      `- Suspicious Events: ${suspicious.length}`,
+      ``,
+      `## Top Findings`,
+      topFindings || "No suspicious findings.",
+      ``,
+      `## Decision Context`,
+      `- Copilot Recommendation: ${packet.copilot?.overall_recommendation || "n/a"}`,
+      `- Copilot Confidence: ${Math.round((packet.copilot?.confidence || 0) * 100)}%`,
+      ``,
+      `## Filtered Timeline Count`,
+      `- Currently visible events: ${events.length}`,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(report);
+      setMessage("Incident report copied to clipboard.");
+    } catch {
+      setMessage("Could not copy incident report.");
+    }
+  }
+
   async function deleteInterview(item: FeedItem) {
     const ok = window.confirm(
       `Delete interview for "${item.candidate_name}" (${item.job_title})?\n\nThis removes transcript and security timeline permanently.`
@@ -190,6 +282,90 @@ export default function InterviewReviewPanel() {
     () => feed.find((f) => f.interview_id === selectedInterviewId) || null,
     [feed, selectedInterviewId]
   );
+
+  const snapshotsByEventId = useMemo(() => {
+    const map = new Map<string, Array<NonNullable<ReviewPacket["evidence_snapshots"]>[number]>>();
+    if (!packet?.evidence_snapshots?.length) return map;
+    for (const snap of packet.evidence_snapshots) {
+      const key = (snap.security_event_id || "").trim();
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)?.push(snap);
+    }
+    return map;
+  }, [packet]);
+
+  const securitySummary = useMemo(() => {
+    const events = packet?.security_events || [];
+    const counts = {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    };
+    for (const e of events) {
+      const key = (e.severity || "medium") as keyof typeof counts;
+      if (key in counts) counts[key] += 1;
+    }
+    return counts;
+  }, [packet]);
+
+  const eventTypeOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of packet?.security_events || []) {
+      if (e.event_type) set.add(e.event_type);
+    }
+    return ["all", ...Array.from(set)];
+  }, [packet]);
+
+  const filteredSecurityEvents = useMemo(() => {
+    const events = packet?.security_events || [];
+    return events.filter((e) => {
+      const sevOk = severityFilter === "all" ? true : e.severity === severityFilter;
+      const typeOk = eventTypeFilter === "all" ? true : e.event_type === eventTypeFilter;
+      const suspiciousHit =
+        e.severity === "critical" ||
+        e.severity === "high" ||
+        SUSPICIOUS_EVENT_HINTS.some((hint) => (e.event_type || "").includes(hint));
+      const suspiciousOk = suspiciousOnly ? suspiciousHit : true;
+      return sevOk && typeOk && suspiciousOk;
+    });
+  }, [packet, severityFilter, eventTypeFilter, suspiciousOnly]);
+
+  const suspiciousEvents = useMemo(() => {
+    const events = packet?.security_events || [];
+    return events.filter(
+      (e) =>
+        e.severity === "critical" ||
+        e.severity === "high" ||
+        SUSPICIOUS_EVENT_HINTS.some((hint) => (e.event_type || "").includes(hint))
+    );
+  }, [packet]);
+
+  const filteredPlayback = useMemo(() => {
+    const timeline = playback?.timeline || [];
+    const q = playbackQuery.trim().toLowerCase();
+    return timeline.filter((entry) => {
+      const kindOk = playbackKindFilter === "all" ? true : entry.kind === playbackKindFilter;
+      if (!kindOk) return false;
+      if (!q) return true;
+      const content = `${entry.kind} ${entry.content} ${JSON.stringify(entry.metadata || {})}`.toLowerCase();
+      return content.includes(q);
+    });
+  }, [playback, playbackKindFilter, playbackQuery]);
+
+  const decisionBadge = useMemo(() => {
+    const integrity = packet?.integrity_score || 0;
+    const severe = (securitySummary.critical || 0) + (securitySummary.high || 0);
+    if (integrity >= 85 && severe === 0) {
+      return { label: "Low Risk Interview", tone: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" };
+    }
+    if (integrity >= 70 && severe <= 2) {
+      return { label: "Moderate Risk Interview", tone: "bg-amber-500/15 text-amber-300 border-amber-500/30" };
+    }
+    return { label: "High Risk Interview", tone: "bg-rose-500/15 text-rose-300 border-rose-500/30" };
+  }, [packet, securitySummary]);
 
   useEffect(() => {
     void loadFeed();
@@ -277,13 +453,51 @@ export default function InterviewReviewPanel() {
               <p className="text-white font-semibold">{packet.candidate_name} • {packet.job_title}</p>
               <p className="text-xs text-slate-500">{packet.candidate_email}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => void copyForAiAnalysis()}
-              className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/20"
-            >
-              Copy Q&A JSON for AI Analysis
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void copyForAiAnalysis()}
+                className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/20"
+              >
+                Copy Q&A JSON
+              </button>
+              <button
+                type="button"
+                onClick={() => void copyForensicBundle()}
+                className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
+              >
+                Copy Forensic Bundle
+              </button>
+              <button
+                type="button"
+                onClick={() => void copyIncidentReport()}
+                className="rounded-full border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20"
+              >
+                Copy Incident Report
+              </button>
+            </div>
+          </div>
+
+          <div className={`mt-4 rounded-lg border px-3 py-2 text-xs font-semibold ${decisionBadge.tone}`}>
+            Decision Signal: {decisionBadge.label}
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-5">
+            <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              Critical: {securitySummary.critical}
+            </div>
+            <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
+              High: {securitySummary.high}
+            </div>
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              Medium: {securitySummary.medium}
+            </div>
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-300">
+              Low: {securitySummary.low}
+            </div>
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+              Info: {securitySummary.info}
+            </div>
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -344,12 +558,50 @@ export default function InterviewReviewPanel() {
             </div>
 
             <div className="rounded-xl border border-white/10 bg-[#0f1119] p-3">
-              <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Security Timeline</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Security Timeline</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSuspiciousOnly((v) => !v)}
+                    className={`rounded border px-2 py-1 text-[11px] ${
+                      suspiciousOnly
+                        ? "border-rose-500/40 bg-rose-500/15 text-rose-300"
+                        : "border-white/20 bg-[#0a0c12] text-slate-300"
+                    }`}
+                  >
+                    {suspiciousOnly ? "Suspicious Only: ON" : "Suspicious Only: OFF"}
+                  </button>
+                  <select
+                    value={severityFilter}
+                    onChange={(e) => setSeverityFilter(e.target.value as typeof severityFilter)}
+                    className="rounded border border-white/20 bg-[#0a0c12] px-2 py-1 text-[11px] text-slate-300"
+                  >
+                    <option value="all">All Severity</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                    <option value="info">Info</option>
+                  </select>
+                  <select
+                    value={eventTypeFilter}
+                    onChange={(e) => setEventTypeFilter(e.target.value)}
+                    className="rounded border border-white/20 bg-[#0a0c12] px-2 py-1 text-[11px] text-slate-300"
+                  >
+                    {eventTypeOptions.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt === "all" ? "All Event Types" : opt}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div className="mt-3 max-h-[360px] space-y-2 overflow-y-auto">
-                {packet.security_events.length === 0 ? (
-                  <p className="text-xs text-slate-500">No security events recorded.</p>
+                {filteredSecurityEvents.length === 0 ? (
+                  <p className="text-xs text-slate-500">No security events matched current filters.</p>
                 ) : (
-                  packet.security_events.map((event, idx) => (
+                  filteredSecurityEvents.map((event, idx) => (
                     <div key={`${event.created_at}-${idx}`} className="rounded-lg border border-white/10 bg-[#0a0c12] p-2 text-xs">
                       <p className="font-semibold text-rose-300">
                         {event.event_type} • {event.severity}
@@ -358,6 +610,61 @@ export default function InterviewReviewPanel() {
                       <p className="mt-1 text-slate-300">{event.details}</p>
                       {event.event_hash ? <p className="mt-1 break-all text-[10px] text-slate-500">hash: {event.event_hash}</p> : null}
                       <p className="mt-1 text-slate-500">{new Date(event.created_at).toLocaleString()}</p>
+
+                      {(() => {
+                        const eventId = String(event.id || "");
+                        const snaps = eventId ? snapshotsByEventId.get(eventId) || [] : [];
+                        if (!snaps.length) return null;
+                        const before = snaps.find((s) => s.snapshot_type === "screen_before");
+                        const after = snaps.find((s) => s.snapshot_type === "screen_after" || s.snapshot_type === "screen");
+                        const camera = snaps.find((s) => s.snapshot_type === "camera");
+                        const challenge = snaps.find((s) => s.snapshot_type === "camera_challenge");
+                        return (
+                          <div className="mt-2 space-y-2">
+                            {(before || after) ? (
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="rounded border border-white/10 bg-black/20 p-1">
+                                  <p className="mb-1 text-[10px] text-slate-400">Screen Before</p>
+                                  {before ? (
+                                    <img src={before.image_data_url} alt="screen before" className="h-24 w-full rounded object-cover" />
+                                  ) : (
+                                    <div className="flex h-24 items-center justify-center rounded bg-white/5 text-[10px] text-slate-500">Not captured</div>
+                                  )}
+                                </div>
+                                <div className="rounded border border-white/10 bg-black/20 p-1">
+                                  <p className="mb-1 text-[10px] text-slate-400">Screen After</p>
+                                  {after ? (
+                                    <img src={after.image_data_url} alt="screen after" className="h-24 w-full rounded object-cover" />
+                                  ) : (
+                                    <div className="flex h-24 items-center justify-center rounded bg-white/5 text-[10px] text-slate-500">Not captured</div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {(camera || challenge) ? (
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="rounded border border-white/10 bg-black/20 p-1">
+                                  <p className="mb-1 text-[10px] text-slate-400">Camera Snapshot</p>
+                                  {camera ? (
+                                    <img src={camera.image_data_url} alt="camera snapshot" className="h-20 w-full rounded object-cover" />
+                                  ) : (
+                                    <div className="flex h-20 items-center justify-center rounded bg-white/5 text-[10px] text-slate-500">Not captured</div>
+                                  )}
+                                </div>
+                                <div className="rounded border border-white/10 bg-black/20 p-1">
+                                  <p className="mb-1 text-[10px] text-slate-400">Challenge Snapshot</p>
+                                  {challenge ? (
+                                    <img src={challenge.image_data_url} alt="challenge snapshot" className="h-20 w-full rounded object-cover" />
+                                  ) : (
+                                    <div className="flex h-20 items-center justify-center rounded bg-white/5 text-[10px] text-slate-500">Not captured</div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
                     </div>
                   ))
                 )}
@@ -384,8 +691,27 @@ export default function InterviewReviewPanel() {
               <summary className="cursor-pointer text-xs font-semibold uppercase tracking-widest text-slate-400">
                 Playback Timeline
               </summary>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  value={playbackKindFilter}
+                  onChange={(e) => setPlaybackKindFilter(e.target.value as typeof playbackKindFilter)}
+                  className="rounded border border-white/20 bg-[#0a0c12] px-2 py-1 text-[11px] text-slate-300"
+                >
+                  <option value="all">All Kinds</option>
+                  <option value="question">Questions</option>
+                  <option value="answer">Answers</option>
+                  <option value="security_event">Security Events</option>
+                  <option value="snapshot">Snapshots</option>
+                </select>
+                <input
+                  value={playbackQuery}
+                  onChange={(e) => setPlaybackQuery(e.target.value)}
+                  placeholder="Search playback..."
+                  className="rounded border border-white/20 bg-[#0a0c12] px-2 py-1 text-[11px] text-slate-300 placeholder:text-slate-500"
+                />
+              </div>
               <div className="mt-3 max-h-56 space-y-2 overflow-y-auto text-xs">
-                {playback.timeline.map((entry, idx) => (
+                {filteredPlayback.map((entry, idx) => (
                   <div key={`${entry.kind}-${idx}`} className="rounded-md border border-white/10 bg-[#0a0c12] p-2">
                     <p className="text-slate-500">
                       {entry.kind} • {new Date(entry.timestamp).toLocaleString()}
@@ -393,6 +719,9 @@ export default function InterviewReviewPanel() {
                     <p className="mt-1 text-slate-200">{entry.content}</p>
                   </div>
                 ))}
+                {filteredPlayback.length === 0 ? (
+                  <p className="text-xs text-slate-500">No playback entries matched current filters.</p>
+                ) : null}
               </div>
             </details>
           ) : null}

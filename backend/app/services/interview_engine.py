@@ -21,6 +21,19 @@ QUESTION_BANK = [
 
 PII_LINE_HINTS = ("email", "mail", "phone", "mobile", "address", "location", "contact", "github.com", "linkedin.com")
 INTERVIEW_COMPLETE_SENTINEL = "__INTERVIEW_COMPLETE__"
+DANGLING_TAIL_TOKENS = {
+    "in",
+    "on",
+    "for",
+    "with",
+    "to",
+    "of",
+    "about",
+    "around",
+    "at",
+    "particularly",
+    "especially",
+}
 
 
 def _redact_pii(text: str) -> str:
@@ -336,6 +349,51 @@ def _ensure_single_question_sentence(text: str) -> str:
     return cleaned.strip()
 
 
+def _trim_question_to_word_limit(question: str, max_words: int = 36) -> str:
+    words = question.split()
+    if len(words) <= max_words:
+        return question
+    clipped = words[:max_words]
+    while len(clipped) > 10 and clipped[-1].strip(" ,;:.!?").lower() in DANGLING_TAIL_TOKENS:
+        clipped.pop()
+    candidate = " ".join(clipped).rstrip(",;:.! ")
+    if "?" not in candidate:
+        candidate += "?"
+    return candidate
+
+
+def _repair_dangling_question_tail(question: str, role_title: str) -> str:
+    q = (question or "").strip()
+    if not q:
+        return q
+    core = q[:-1].strip() if q.endswith("?") else q
+    tokens = core.split()
+    if not tokens:
+        return q
+    if tokens[-1].strip(" ,;:.!?").lower() not in DANGLING_TAIL_TOKENS:
+        return q
+    while len(tokens) > 8 and tokens[-1].strip(" ,;:.!?").lower() in DANGLING_TAIL_TOKENS:
+        tokens.pop()
+    fixed = " ".join(tokens).rstrip(",;:.! ")
+    if not fixed:
+        fixed = f"Can you walk me through one project relevant to {role_title or 'this role'}"
+    if "?" not in fixed:
+        fixed += "?"
+    return fixed
+
+
+def _de_genericize_question(question: str, cleaned_history: list[dict], role_title: str, parsed_sections: dict, target_competency: str) -> str:
+    q_low = (question or "").strip().lower()
+    bad_prefixes = (
+        "good start",
+        "thanks, stay on this same question",
+        "let's complete this answer properly",
+    )
+    if any(q_low.startswith(p) for p in bad_prefixes):
+        return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
+    return question
+
+
 def _postprocess_question(
     question: str,
     cleaned_history: list[dict],
@@ -347,14 +405,13 @@ def _postprocess_question(
     if not q:
         return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
 
-    words = q.split()
-    if len(words) > 38:
-        # Keep it crisp and interviewer-like.
-        q = " ".join(words[:38]).rstrip(",;:") + "?"
+    q = _de_genericize_question(q, cleaned_history, role_title, parsed_sections, target_competency)
+    q = _trim_question_to_word_limit(q, max_words=36)
+    q = _repair_dangling_question_tail(q, role_title)
 
     assistant_questions = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"]
     for prev in assistant_questions[-8:]:
-        if _jaccard_similarity(q, prev) >= 0.7:
+        if _jaccard_similarity(q, prev) >= 0.62:
             return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
 
     known_numbers = _known_numeric_tokens(cleaned_history, parsed_sections)
@@ -639,6 +696,7 @@ def _generate_ai_intro_question(
             "Single question only",
             "Avoid repeating the same opening wording across interviews",
             "Do not invent projects, metrics, or technologies",
+            "Do not end with dangling fragments like 'particularly in?' or 'perhaps something?'",
         ],
         "output_schema": {"question": "string"},
     }
@@ -787,6 +845,8 @@ def _generate_ai_next_question(
             "In stress_test stage, challenge constraints and failure modes",
             "In behavioral stage, probe ownership, communication, and decisions under ambiguity",
             "Keep concise and high-signal (max 35 words)",
+            "Do not use generic filler lines like 'Good start' or 'Thanks, stay on this question'",
+            "Do not produce generic coaching statements; ask a concrete interview question only",
         ],
         "output_schema": {"question": "string"},
     }
@@ -823,6 +883,8 @@ def _generate_ai_precision_probe(
             "Ask for concrete actions, decisions, and measurable result",
             "Do not switch topic; stay tightly connected to last question",
             "Natural human interviewer tone",
+            "Avoid stock filler phrases (e.g., 'Good start')",
+            "Ask one concrete follow-up with technical specifics",
         ],
         "output_schema": {"question": "string"},
     }
@@ -904,8 +966,10 @@ def _build_clarify_prompt(last_question: str, last_answer: str) -> str:
         need = missing[0]
     else:
         need = ", ".join(missing[:-1]) + f", and {missing[-1]}"
+    question_focus = _extract_keywords(last_question, limit=1)
+    focus_clause = f" on {question_focus[0]}" if question_focus else ""
     if last_question:
-        return f"Before we move on, please finish the same answer and include {need}."
+        return f"Before we move on, please finish the same answer{focus_clause} and include {need}."
     return f"Please answer with {need} so I can evaluate it fairly."
 
 

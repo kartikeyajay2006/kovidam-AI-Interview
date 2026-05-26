@@ -106,7 +106,9 @@ export default function DashboardControls({ jobs }: { jobs: Job[] }) {
         return;
       }
       if (payload.failed > 0) {
-        setStatus(`Invites sent: ${payload.sent}/${payload.attempted}. Failed: ${payload.failed}. ${payload.failures.join(" | ")}`);
+        setStatus(`Invite processing: ${payload.sent}/${payload.attempted} created. Failed: ${payload.failed}. ${payload.failures.join(" | ")}`);
+      } else if (Array.isArray(payload.failures) && payload.failures.length > 0) {
+        setStatus(`Invites created for all ${payload.sent} candidates. Note: ${payload.failures.join(" | ")}`);
       } else {
         setStatus(`Invites sent successfully to all ${payload.sent} candidates.`);
       }

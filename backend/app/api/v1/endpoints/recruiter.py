@@ -249,11 +249,17 @@ def _compute_event_hash(interview_id: UUID, event_index: int, prev_hash: str, ev
 def _extract_security_snapshot_entries(evidence: dict) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
     camera = str(evidence.get("camera_snapshot") or "").strip()
+    camera_challenge = str(evidence.get("camera_challenge_snapshot") or "").strip()
+    prev_screen = str(evidence.get("prev_screen_snapshot") or "").strip()
     screen = str(evidence.get("screen_snapshot") or "").strip()
     if camera.startswith("data:image/"):
         entries.append(("camera", camera))
+    if camera_challenge.startswith("data:image/"):
+        entries.append(("camera_challenge", camera_challenge))
+    if prev_screen.startswith("data:image/"):
+        entries.append(("screen_before", prev_screen))
     if screen.startswith("data:image/"):
-        entries.append(("screen", screen))
+        entries.append(("screen_after", screen))
     return entries
 
 
@@ -339,8 +345,6 @@ def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple
             target_email = latest_resume.extracted_email.strip()
             candidate.email = target_email
             db.commit()
-        else:
-            return False, f"{candidate.name}: invalid recipient email"
 
     interview = InterviewSession(
         candidate_id=candidate.id,
@@ -356,6 +360,9 @@ def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple
     settings = get_settings()
     interview_link = f"{settings.frontend_base_url}/candidate/interview/{interview.id}"
 
+    if not is_deliverable_email(target_email):
+        return True, f"MANUAL_LINK::{interview_link}::{candidate.name}: recipient email invalid, share link manually"
+
     try:
         send_interview_email(
             to_email=target_email,
@@ -365,9 +372,7 @@ def create_and_send_invite(db: Session, candidate: Candidate, job: Job) -> tuple
         )
         return True, interview_link
     except Exception as exc:
-        db.delete(interview)
-        db.commit()
-        return False, f"{candidate.name}: {exc}"
+        return True, f"MANUAL_LINK::{interview_link}::{candidate.name}: email failed ({exc})"
 
 
 @router.post("/jobs", response_model=JobOut)
@@ -1123,6 +1128,13 @@ def send_interview_link(payload: SendInterviewLinkRequest, db: Session = Depends
     if not ok:
         raise HTTPException(status_code=400, detail=f"Mail send failed: {result}")
 
+    email_sent = True
+    interview_link = result
+    if result.startswith("MANUAL_LINK::"):
+        email_sent = False
+        parts = result.split("::", 2)
+        interview_link = parts[1] if len(parts) > 1 else ""
+
     latest = db.execute(
         select(InterviewSession)
         .where(InterviewSession.candidate_id == candidate.id)
@@ -1132,8 +1144,8 @@ def send_interview_link(payload: SendInterviewLinkRequest, db: Session = Depends
 
     return SendInterviewLinkResponse(
         interview_id=latest.id,
-        interview_link=result,
-        email_sent=True,
+        interview_link=interview_link,
+        email_sent=email_sent,
     )
 
 
@@ -1155,6 +1167,10 @@ def send_links_for_job(job_id: UUID, db: Session = Depends(get_db)):
         ok, result = create_and_send_invite(db, candidate, job)
         if ok:
             sent += 1
+            if result.startswith("MANUAL_LINK::"):
+                parts = result.split("::", 2)
+                note = parts[2] if len(parts) > 2 else f"{candidate.name}: email failed, share manually"
+                failures.append(note)
         else:
             failures.append(result)
 
@@ -1162,7 +1178,7 @@ def send_links_for_job(job_id: UUID, db: Session = Depends(get_db)):
         job_id=job_id,
         attempted=attempted,
         sent=sent,
-        failed=attempted - sent,
+        failed=max(0, attempted - sent),
         failures=failures,
     )
 

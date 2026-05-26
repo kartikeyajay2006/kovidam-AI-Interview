@@ -141,10 +141,17 @@ export default function InterviewLauncher({
   const [micVerificationError, setMicVerificationError] = useState("");
   const [micVerificationScore, setMicVerificationScore] = useState(0);
   const [micLevel, setMicLevel] = useState(0);
+  const [startingInterview, setStartingInterview] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [voiceprintBaseline, setVoiceprintBaseline] = useState<number[] | null>(null);
   const [voiceMismatchSuspicious, setVoiceMismatchSuspicious] = useState(false);
-  const [securityChallenge, setSecurityChallenge] = useState<{ prompt: string; expiresAt: number } | null>(null);
+  const [securityChallenge, setSecurityChallenge] = useState<{
+    prompt: string;
+    expiresAt: number;
+    action: "turn_left" | "turn_right" | "nod_down";
+    baselineX: number;
+    baselineY: number;
+  } | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const faceDetectorRef = useRef<FaceDetectorLike | null>(null);
   const noSpeechRetryRef = useRef(0);
@@ -164,6 +171,7 @@ export default function InterviewLauncher({
   const cameraFreezeTimerRef = useRef<number | null>(null);
   const faceCheckRef = useRef<number | null>(null);
   const userVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const userStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
@@ -190,6 +198,9 @@ export default function InterviewLauncher({
   const wsIgnoreNextQuestionRef = useRef(false);
   const securityChallengeTimerRef = useRef<number | null>(null);
   const incompleteAnswerCountRef = useRef(0);
+  const recentScreenSnapshotRef = useRef("");
+  const prevScreenSnapshotRef = useRef("");
+  const currentFaceCenterRef = useRef<{ x: number; y: number; areaRatio: number }>({ x: 0.5, y: 0.5, areaRatio: 0 });
 
   function clearSpeechSilenceTimer() {
     if (speechSilenceTimerRef.current) {
@@ -207,6 +218,31 @@ export default function InterviewLauncher({
         // Browser may block autoplay until user interaction; stream will still be attached.
       });
     }
+  }
+
+  function attachScreenStreamToVideo(stream: MediaStream | null) {
+    if (!screenVideoRef.current || !stream) return;
+    screenVideoRef.current.srcObject = stream;
+    const maybePlay = screenVideoRef.current.play();
+    if (maybePlay && typeof maybePlay.catch === "function") {
+      maybePlay.catch(() => {
+        // Browser policy may delay autoplay.
+      });
+    }
+  }
+
+  function upsertAssistantQuestion(prev: Turn[], question: string): Turn[] {
+    const clean = (question || "").trim();
+    if (!clean) return prev;
+    const next = [...prev];
+    const last = next[next.length - 1];
+    if (last && last.role === "assistant") {
+      // Never keep two consecutive AI questions without a candidate turn in between.
+      next[next.length - 1] = { role: "assistant", source: "system", content: clean };
+      return next;
+    }
+    next.push({ role: "assistant", source: "system", content: clean });
+    return next;
   }
 
   const complianceOk = useMemo(() => cameraOn && micOn && sharingScreen, [cameraOn, micOn, sharingScreen]);
@@ -298,7 +334,7 @@ export default function InterviewLauncher({
           if (!q) return;
           setLoadingQuestion(false);
           setHistory((prev) => {
-            const next = [...prev, { role: "assistant" as const, source: "system" as const, content: q }];
+            const next = upsertAssistantQuestion(prev, q);
             historyRef.current = next;
             return next;
           });
@@ -320,6 +356,20 @@ export default function InterviewLauncher({
     };
     socket.onclose = () => {
       setWsConnected(false);
+      if (wsAwaitingNextQuestionRef.current && statusRef.current === "in_progress") {
+        wsAwaitingNextQuestionRef.current = false;
+        void (async () => {
+          const turns = await loadTurns();
+          const last = turns[turns.length - 1];
+          if (last && last.role === "assistant" && last.content?.trim()) {
+            setLoadingQuestion(false);
+            setMessage("Continuing with saved question.");
+            speak(last.content.trim());
+            return;
+          }
+          await fetchNextQuestion(turns);
+        })();
+      }
       if (!closedByCleanup && wsRetryCountRef.current < 2 && statusRef.current === "in_progress") {
         wsRetryCountRef.current += 1;
         window.setTimeout(() => {
@@ -416,15 +466,32 @@ export default function InterviewLauncher({
   useEffect(() => {
     if (status !== "in_progress" || cheatingTagged) return;
     if (elapsedSec < 180 || elapsedSec % 150 !== 0 || securityChallenge) return;
-    const prompts = [
-      "Liveness check: turn your face slightly left, then click challenge complete.",
-      "Security check: keep only your face in frame and click challenge complete.",
+    const actionPool: Array<{
+      action: "turn_left" | "turn_right" | "nod_down";
+      prompt: string;
+    }> = [
+      { action: "turn_left", prompt: "Liveness check: turn your face slightly to your left, then click challenge complete." },
+      { action: "turn_right", prompt: "Liveness check: turn your face slightly to your right, then click challenge complete." },
+      { action: "nod_down", prompt: "Liveness check: nod your head down once, then click challenge complete." },
     ];
-    const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+    const picked = actionPool[Math.floor(Math.random() * actionPool.length)];
+    const prompt = picked.prompt;
     const expiresAt = Date.now() + 20000;
-    setSecurityChallenge({ prompt, expiresAt });
+    const baseline = currentFaceCenterRef.current;
+    setSecurityChallenge({
+      prompt,
+      expiresAt,
+      action: picked.action,
+      baselineX: baseline.x,
+      baselineY: baseline.y,
+    });
     setMessage(prompt);
-    logSecurityEvent("Random security challenge issued.", "random_security_challenge_issued", "medium", { prompt });
+    logSecurityEvent("Random security challenge issued.", "random_security_challenge_issued", "medium", {
+      prompt,
+      action: picked.action,
+      baselineX: Number(baseline.x.toFixed(3)),
+      baselineY: Number(baseline.y.toFixed(3)),
+    });
     if (securityChallengeTimerRef.current) {
       window.clearTimeout(securityChallengeTimerRef.current);
     }
@@ -642,6 +709,10 @@ export default function InterviewLauncher({
   }, [mounted, status]);
 
   useEffect(() => {
+    attachScreenStreamToVideo(screenStreamRef.current);
+  }, [mounted, status, sharingScreen]);
+
+  useEffect(() => {
     const maybeWindow = window as Window & {
       FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => FaceDetectorLike;
     };
@@ -664,8 +735,14 @@ export default function InterviewLauncher({
     let lastLoggedNoFace = false;
     let detectorBusy = false;
     let detectorFaceFrames = 0;
+    let multiFacePositiveFrames = 0;
+    let multiFaceNegativeFrames = 0;
     let prevFrameData: Uint8ClampedArray | null = null;
     let lowMotionFrames = 0;
+    const detectorCanvas = document.createElement("canvas");
+    detectorCanvas.width = 320;
+    detectorCanvas.height = 240;
+    const detectorCtx = detectorCanvas.getContext("2d");
 
     function checkFrame() {
       faceCheckRef.current = requestAnimationFrame(checkFrame);
@@ -761,17 +838,46 @@ export default function InterviewLauncher({
         (variance > 45 || edgeDensity > 3.8);
 
       // Prefer real face detection when supported to reduce false positives.
-      if (!detectorBusy && faceDetectorRef.current && frameCounter % 10 === 0) {
+      if (!detectorBusy && faceDetectorRef.current && frameCounter % 6 === 0) {
         detectorBusy = true;
+        if (detectorCtx) {
+          detectorCtx.drawImage(video, 0, 0, detectorCanvas.width, detectorCanvas.height);
+        }
         void faceDetectorRef.current
-          .detect(canvas)
+          .detect(detectorCtx ? detectorCanvas : canvas)
           .then((faces) => {
             const validFaces = (faces || []).filter((f) => {
               const w = Number(f.boundingBox?.width || 0);
               const h = Number(f.boundingBox?.height || 0);
-              return w > 6 && h > 6;
+              return w > 4 && h > 4;
             });
-            setMultipleFaces(validFaces.length > 1);
+            if (validFaces.length >= 1) {
+              const ranked = [...validFaces].sort((a, b) => {
+                const aw = Number(a.boundingBox?.width || 0);
+                const ah = Number(a.boundingBox?.height || 0);
+                const bw = Number(b.boundingBox?.width || 0);
+                const bh = Number(b.boundingBox?.height || 0);
+                return bw * bh - aw * ah;
+              });
+              const lead = ranked[0];
+              const bb = lead.boundingBox || {};
+              const cx = ((Number((bb as { x?: number }).x || 0) + Number(bb.width || 0) / 2) / detectorCanvas.width) || 0.5;
+              const cy = ((Number((bb as { y?: number }).y || 0) + Number(bb.height || 0) / 2) / detectorCanvas.height) || 0.5;
+              const areaRatio = (Number(bb.width || 0) * Number(bb.height || 0)) / (detectorCanvas.width * detectorCanvas.height);
+              currentFaceCenterRef.current = { x: cx, y: cy, areaRatio };
+            }
+            if (validFaces.length > 1) {
+              multiFacePositiveFrames += 1;
+              multiFaceNegativeFrames = 0;
+            } else {
+              multiFaceNegativeFrames += 1;
+              multiFacePositiveFrames = 0;
+            }
+            if (multiFacePositiveFrames >= 2) {
+              setMultipleFaces(true);
+            } else if (multiFaceNegativeFrames >= 3) {
+              setMultipleFaces(false);
+            }
             if (validFaces.length >= 1) {
               detectorFaceFrames = 8;
               noFaceFrameCount = 0;
@@ -847,7 +953,7 @@ export default function InterviewLauncher({
       return;
     }
     if (faceTimerRef.current) return;
-    let remaining = 20;
+    let remaining = multipleFaces ? 8 : 20;
     setFaceViolationCountdown(remaining);
     faceTimerRef.current = window.setInterval(() => {
       remaining -= 1;
@@ -890,16 +996,23 @@ export default function InterviewLauncher({
   // Screen change detection
   useEffect(() => {
     if (status !== "in_progress" || cheatingTagged || !sharingScreen) return;
-    const screenVideo = document.createElement("video");
+    const screenVideo = screenVideoRef.current;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-    if (screenStreamRef.current) screenVideo.srcObject = screenStreamRef.current;
+    if (!screenVideo) return;
     canvas.width = 80; canvas.height = 45;
 
     screenCheckIntervalRef.current = window.setInterval(() => {
       if (!ctx || screenVideo.readyState < 2) return;
       ctx.drawImage(screenVideo, 0, 0, 80, 45);
       const imageData = ctx.getImageData(0, 0, 80, 45).data;
+      try {
+        recentScreenSnapshotRef.current = canvas.toDataURL("image/jpeg", 0.72);
+      } catch {
+        // no-op
+      }
+      const previousScreen = prevScreenSnapshotRef.current;
+      const currentScreen = recentScreenSnapshotRef.current;
       if (prevScreenPixelsRef.current) {
         let deltaSum = 0;
         let changedSamples = 0;
@@ -929,7 +1042,11 @@ export default function InterviewLauncher({
             terminateInterviewForSecurity(
               "Cheating detected: blacked-out screen share feed.",
               "screen_black_frame_timeout",
-              { avgBrightness: Number(avgBrightness.toFixed(2)) }
+              {
+                avgBrightness: Number(avgBrightness.toFixed(2)),
+                prev_screen_snapshot: previousScreen,
+                screen_snapshot: currentScreen,
+              }
             );
           }
         } else {
@@ -943,7 +1060,11 @@ export default function InterviewLauncher({
               "Screen feed looks frozen or static for an extended duration.",
               "screen_frozen_warning",
               "high",
-              { meanDelta: Number(meanDelta.toFixed(3)) }
+              {
+                meanDelta: Number(meanDelta.toFixed(3)),
+                prev_screen_snapshot: previousScreen,
+                screen_snapshot: currentScreen,
+              }
             );
           }
         } else {
@@ -956,7 +1077,12 @@ export default function InterviewLauncher({
             "Screen content changed during interview.",
             "screen_change_detected",
             "medium",
-            { meanDelta: Number(meanDelta.toFixed(2)), changedRatio: Number(changedRatio.toFixed(3)) }
+            {
+              meanDelta: Number(meanDelta.toFixed(2)),
+              changedRatio: Number(changedRatio.toFixed(3)),
+              prev_screen_snapshot: previousScreen,
+              screen_snapshot: currentScreen,
+            }
           );
           const nowMs = Date.now();
           const burst = screenChangeBurstRef.current;
@@ -981,7 +1107,11 @@ export default function InterviewLauncher({
                 "Cheating detected: excessive screen switching/content changes.",
                 "screen_change_timeout",
                 "critical",
-                { burstCount: screenChangeBurstRef.current.count }
+                {
+                  burstCount: screenChangeBurstRef.current.count,
+                  prev_screen_snapshot: previousScreen,
+                  screen_snapshot: currentScreen,
+                }
               );
               void saveTurn(
                 "assistant",
@@ -1003,6 +1133,7 @@ export default function InterviewLauncher({
         }
       }
       prevScreenPixelsRef.current = new Uint8ClampedArray(imageData);
+      prevScreenSnapshotRef.current = currentScreen;
     }, 1800);
 
     screenVideo.play().catch(() => {});
@@ -1058,8 +1189,9 @@ export default function InterviewLauncher({
       setMouthMotionLevel(Number(meanMouthMotion.toFixed(2)));
       const audioActive = listeningRef.current && micLevelRef.current > 18;
       const eligible = audioActive && faceVisible && !multipleFaces;
+      const dynamicMotionThreshold = micLevelRef.current > 35 ? 2.6 : 1.9;
 
-      if (eligible && meanMouthMotion < 1.9) {
+      if (eligible && meanMouthMotion < dynamicMotionThreshold) {
         lipSyncLowMotionCountRef.current += 1;
       } else {
         lipSyncLowMotionCountRef.current = Math.max(0, lipSyncLowMotionCountRef.current - 2);
@@ -1545,14 +1677,9 @@ export default function InterviewLauncher({
   }
 
   function captureScreenSnapshot(): string {
-    const stream = screenStreamRef.current;
-    if (!stream) return "";
-    const video = document.createElement("video");
-    video.srcObject = stream;
-    video.muted = true;
-    video.playsInline = true;
-    video.play().catch(() => undefined);
-    return captureVideoSnapshot(video, 320, 180);
+    const fromLive = captureVideoSnapshot(screenVideoRef.current, 320, 180);
+    if (fromLive) return fromLive;
+    return recentScreenSnapshotRef.current || "";
   }
 
   function stopMicLevelMonitor() {
@@ -1738,7 +1865,7 @@ export default function InterviewLauncher({
         setMessage("AI could not generate a question right now.");
         return;
       }
-      const updated: Turn[] = [...currentHistory, { role: "assistant", source: "system", content: q }];
+      const updated: Turn[] = upsertAssistantQuestion(currentHistory, q);
       setHistory(updated);
       speak(q);
       setMessage("AI interviewer is speaking...");
@@ -1865,10 +1992,14 @@ export default function InterviewLauncher({
       }
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current = displayStream;
+      attachScreenStreamToVideo(displayStream);
       displayStream.getVideoTracks().forEach((track) => {
         track.onended = () => {
           setSharingScreen(false);
           screenStreamRef.current = null;
+          if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+          recentScreenSnapshotRef.current = "";
+          prevScreenSnapshotRef.current = "";
           logSecurityEvent("Screen sharing stopped by candidate.", "screen_share_stopped", "critical");
           if (statusRef.current === "in_progress") {
             terminateInterviewForSecurity(
@@ -2006,7 +2137,16 @@ export default function InterviewLauncher({
     if (baseline && current) {
       diff = await snapshotDifferenceScore(baseline, current);
     }
-    const pass = faceVisible && !multipleFaces && diff > 4.2;
+    const live = currentFaceCenterRef.current;
+    const dx = live.x - securityChallenge.baselineX;
+    const dy = live.y - securityChallenge.baselineY;
+    const actionPassed =
+      securityChallenge.action === "turn_left"
+        ? dx <= -0.04
+        : securityChallenge.action === "turn_right"
+          ? dx >= 0.04
+          : dy >= 0.035;
+    const pass = faceVisible && !multipleFaces && diff > 4.2 && actionPassed;
     if (pass) {
       setSecurityChallenge(null);
       setMessage("Security challenge passed.");
@@ -2014,14 +2154,28 @@ export default function InterviewLauncher({
         "Random liveness challenge passed.",
         "random_security_challenge_passed",
         "info",
-        { diff: Number(diff.toFixed(2)) }
+        {
+          diff: Number(diff.toFixed(2)),
+          action: securityChallenge.action,
+          dx: Number(dx.toFixed(3)),
+          dy: Number(dy.toFixed(3)),
+          camera_challenge_snapshot: current,
+        }
       );
       return;
     }
     terminateInterviewForSecurity(
       "Cheating detected: random liveness/security challenge failed.",
       "random_security_challenge_failed",
-      { diff: Number(diff.toFixed(2)), faceVisible, multipleFaces }
+      {
+        diff: Number(diff.toFixed(2)),
+        faceVisible,
+        multipleFaces,
+        action: securityChallenge.action,
+        dx: Number(dx.toFixed(3)),
+        dy: Number(dy.toFixed(3)),
+        camera_challenge_snapshot: current,
+      }
     );
   }
 
@@ -2077,6 +2231,7 @@ export default function InterviewLauncher({
   }
 
   async function startInterview() {
+    if (startingInterview) return;
     if (setupStep !== "ready") {
       setMessage("Complete Camera, Microphone, and Screen Share steps first.");
       return;
@@ -2090,6 +2245,7 @@ export default function InterviewLauncher({
       return;
     }
     try {
+      setStartingInterview(true);
       setMessage("Starting interview session...");
       await flushQueuedTurns();
       await flushQueuedSecurityEvents();
@@ -2107,23 +2263,29 @@ export default function InterviewLauncher({
       setStatus(payload.status || "in_progress");
       logSecurityEvent("Interview session started.", "interview_started", "info");
       const existingTurns = await loadTurns();
+      const hasTurns = existingTurns.length > 0;
+      const lastTurn = hasTurns ? existingTurns[existingTurns.length - 1] : null;
+      const hasPendingAssistantQuestion = !!lastTurn && lastTurn.role === "assistant";
+      if (hasPendingAssistantQuestion) {
+        setMessage("Continuing from your pending interview question.");
+        if (typeof lastTurn?.content === "string" && lastTurn.content.trim()) {
+          speak(lastTurn.content.trim());
+        }
+        return;
+      }
+
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         setLoadingQuestion(true);
         wsAwaitingNextQuestionRef.current = true;
         wsIgnoreNextQuestionRef.current = false;
         wsRef.current.send(JSON.stringify({ type: "request_next" }));
-        if (wsFallbackTimerRef.current) window.clearTimeout(wsFallbackTimerRef.current);
-        wsFallbackTimerRef.current = window.setTimeout(() => {
-          if (!wsAwaitingNextQuestionRef.current) return;
-          wsAwaitingNextQuestionRef.current = false;
-          wsIgnoreNextQuestionRef.current = true;
-          void fetchNextQuestion(existingTurns);
-        }, 1500);
       } else {
         await fetchNextQuestion(existingTurns);
       }
     } catch (err) {
       setMessage(`Failed to start interview: ${(err as Error).message}`);
+    } finally {
+      setStartingInterview(false);
     }
   }
 
@@ -2210,13 +2372,6 @@ export default function InterviewLauncher({
       wsAwaitingNextQuestionRef.current = true;
       wsIgnoreNextQuestionRef.current = false;
       wsRef.current.send(JSON.stringify({ type: "candidate_answer", content: transcript, source }));
-      if (wsFallbackTimerRef.current) window.clearTimeout(wsFallbackTimerRef.current);
-      wsFallbackTimerRef.current = window.setTimeout(() => {
-        if (!wsAwaitingNextQuestionRef.current) return;
-        wsAwaitingNextQuestionRef.current = false;
-        wsIgnoreNextQuestionRef.current = true;
-        void fetchNextQuestion(updated);
-      }, 1500);
       return;
     }
     await fetchNextQuestion(updated);
@@ -2419,11 +2574,15 @@ export default function InterviewLauncher({
         return;
       }
       screenStreamRef.current = stream;
+      attachScreenStreamToVideo(stream);
       setSharingScreen(true);
       stream.getVideoTracks().forEach((track) => {
         track.onended = () => {
           setSharingScreen(false);
           screenStreamRef.current = null;
+          if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+          recentScreenSnapshotRef.current = "";
+          prevScreenSnapshotRef.current = "";
           logSecurityEvent("Screen sharing ended while interview is active.", "screen_share_stopped", "critical");
           if (statusRef.current === "in_progress") {
             terminateInterviewForSecurity(
@@ -2468,6 +2627,9 @@ export default function InterviewLauncher({
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       userStreamRef.current = null;
       screenStreamRef.current = null;
+      if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+      recentScreenSnapshotRef.current = "";
+      prevScreenSnapshotRef.current = "";
       setCameraOn(false);
       setMicOn(false);
       setSharingScreen(false);
@@ -2792,11 +2954,11 @@ export default function InterviewLauncher({
 
                   <button
                     onClick={startInterview}
-                    disabled={!canStart}
+                    disabled={!canStart || startingInterview}
                     className="flex-1 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-sm font-bold text-white px-4 py-4 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-300 flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(99,102,241,0.25)] hover:shadow-[0_4px_30px_rgba(99,102,241,0.4)] select-none animate-pulse"
                     style={{ animationDuration: "2s" }}
                   >
-                    <span>Launch AI Interview</span>
+                    <span>{startingInterview ? "Launching..." : "Launch AI Interview"}</span>
                     <ArrowRight className="h-4 w-4" />
                   </button>
                 </div>
@@ -3037,6 +3199,7 @@ export default function InterviewLauncher({
             <div className="flex flex-1 flex-col gap-4">
               {/* Hidden face detection canvas */}
               <canvas ref={faceCanvasRef} className="hidden" />
+              <video ref={screenVideoRef} autoPlay muted playsInline className="hidden" />
 
               {/* Main video area */}
               <div className="relative flex-1 overflow-hidden rounded-3xl bg-[#0a0a12] shadow-[0_0_40px_rgba(79,70,229,0.1)] border border-white/5 min-h-[520px]">
