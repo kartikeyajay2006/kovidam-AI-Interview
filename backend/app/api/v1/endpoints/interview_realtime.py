@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -156,6 +157,11 @@ async def interview_realtime_socket(websocket: WebSocket, interview_id: str):
                 .order_by(InterviewTurnLog.created_at.asc())
             ).scalars().all()
             history = _serialize_history(turns)
+            interview_started_at = turns[0].created_at if turns else interview.created_at
+            elapsed_minutes = max(
+                0.0,
+                (datetime.utcnow() - interview_started_at).total_seconds() / 60.0,
+            ) if interview_started_at else 0.0
 
             try:
                 resume_json = json.loads(candidate.parsed_resume_json or "{}")
@@ -176,6 +182,7 @@ async def interview_realtime_socket(websocket: WebSocket, interview_id: str):
                 human_question_bank=[],
                 history=history,
                 candidate_name=candidate.name,
+                elapsed_minutes=elapsed_minutes,
             )
             latency_ms = int((time.perf_counter() - start_ms) * 1000)
 

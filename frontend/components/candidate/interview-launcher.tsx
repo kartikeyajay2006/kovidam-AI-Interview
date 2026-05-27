@@ -38,6 +38,25 @@ type FaceDetectorLike = {
   detect: (image: CanvasImageSource) => Promise<Array<{ boundingBox?: { width?: number; height?: number } }>>;
 };
 
+type CameraFrameAssessment = {
+  mean: number;
+  variance: number;
+  edgeDensity: number;
+  dominantRatio: number;
+  centerVariance: number;
+  brightBlocks: number;
+  hardOcclusion: boolean;
+  likelyOccluded: boolean;
+  usableFrame: boolean;
+};
+
+type FaceRegionSummary = {
+  count: number;
+  largeCount: number;
+  largestAreaRatio: number;
+  secondLargestAreaRatio: number;
+};
+
 const PRIMARY_API = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/proxy/api/v1";
 const FALLBACK_API = "http://127.0.0.1:8000/api/v1";
 const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE_URL || "";
@@ -85,6 +104,8 @@ const MIC_VERIFICATION_PHRASES = [
   "I am ready for this interview and speaking from my own device.",
   "This is a live voice check for my interview session.",
 ];
+const STRICT_SECURITY_ENFORCEMENT = false;
+const WARNING_ONLY_GRACE_SECONDS = 10;
 
 export default function InterviewLauncher({
   interviewId,
@@ -127,6 +148,7 @@ export default function InterviewLauncher({
   const [mouthMotionLevel, setMouthMotionLevel] = useState(0);
   const [cameraFreezeSuspicious, setCameraFreezeSuspicious] = useState(false);
   const [cameraFreezeCountdown, setCameraFreezeCountdown] = useState<number | null>(null);
+  const [cameraObstructionDetected, setCameraObstructionDetected] = useState(false);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const [answerDraft, setAnswerDraft] = useState("");
   const [cameraSnapshots, setCameraSnapshots] = useState<string[]>([]);
@@ -290,6 +312,7 @@ export default function InterviewLauncher({
     statusRef.current = status;
     if (status !== "in_progress") {
       terminatingForSecurityRef.current = false;
+      setCameraObstructionDetected(false);
     }
   }, [status]);
 
@@ -431,7 +454,7 @@ export default function InterviewLauncher({
   useEffect(() => {
     if (status !== "in_progress" || cheatingTagged || !voiceMismatchSuspicious) return;
     terminateInterviewForSecurity(
-      "Cheating detected: voice identity mismatch against verified candidate.",
+      "Voice identity mismatch detected against the verified candidate baseline.",
       "voice_mismatch_timeout"
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -498,7 +521,7 @@ export default function InterviewLauncher({
     securityChallengeTimerRef.current = window.setTimeout(() => {
       if (statusRef.current !== "in_progress") return;
       terminateInterviewForSecurity(
-        "Cheating detected: random security challenge timeout.",
+        "Random security challenge timed out.",
         "random_security_challenge_timeout"
       );
     }, 20000);
@@ -588,33 +611,26 @@ export default function InterviewLauncher({
     }
 
     stopListening();
-    setMessage("Security alert: restore camera, microphone, screen share, and stable internet within 10 seconds.");
+    setMessage(
+      `Security alert: restore camera, microphone, screen share, and stable internet within ${WARNING_ONLY_GRACE_SECONDS} seconds.`
+    );
     logSecurityEvent(
       "Temporary compliance break detected (camera/mic/screen/internet).",
       "compliance_break_started",
       "medium",
       { cameraOn, micOn, sharingScreen, internetQuality }
     );
-    setSecurityCountdown(10);
+    setSecurityCountdown(WARNING_ONLY_GRACE_SECONDS);
     const timer = window.setInterval(() => {
       setSecurityCountdown((prev) => {
         if (prev === null) return null;
         if (prev <= 1) {
           window.clearInterval(timer);
-          setCheatingTagged(true);
-          logSecurityEvent(
-            "Cheating detected: required device/internet compliance broken for more than 10 seconds.",
+          warnOnlySecurityViolation(
+            "Required device/internet compliance remained broken for more than 10 seconds.",
             "compliance_break_timeout",
-            "critical",
             { cameraOn, micOn, sharingScreen, internetQuality }
           );
-          void saveTurn(
-            "assistant",
-            "Cheating detected: required device/internet compliance broken for more than 10 seconds.",
-            "proctor"
-          );
-          setMessage("Interview ended: Cheating detected due to compliance break >10 seconds.");
-          void endInterview();
           return 0;
         }
         return prev - 1;
@@ -637,7 +653,7 @@ export default function InterviewLauncher({
 
     function startTabTimer() {
       if (tabTimerRef.current) return;
-      setTabCountdown(10);
+      setTabCountdown(WARNING_ONLY_GRACE_SECONDS);
       logSecurityEvent("Candidate moved away from interview tab.", "tab_hidden", "high");
       tabTimerRef.current = window.setInterval(() => {
         setTabCountdown((prev) => {
@@ -647,19 +663,10 @@ export default function InterviewLauncher({
               window.clearInterval(tabTimerRef.current);
               tabTimerRef.current = null;
             }
-            setCheatingTagged(true);
-            logSecurityEvent(
-              "Cheating detected: candidate moved away from interview tab for more than 10 seconds.",
-              "tab_hidden_timeout",
-              "critical"
+            warnOnlySecurityViolation(
+              "Candidate moved away from interview tab for more than 10 seconds.",
+              "tab_hidden_timeout"
             );
-            void saveTurn(
-              "assistant",
-              "Cheating detected: candidate moved away from interview tab for more than 10 seconds.",
-              "proctor"
-            );
-            setMessage("Interview ended: Cheating detected (tab switching >10 seconds).");
-            void endInterview();
             return 0;
           }
           return prev - 1;
@@ -717,7 +724,7 @@ export default function InterviewLauncher({
       FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => FaceDetectorLike;
     };
     if (maybeWindow.FaceDetector && !faceDetectorRef.current) {
-      faceDetectorRef.current = new maybeWindow.FaceDetector({ fastMode: true, maxDetectedFaces: 4 });
+      faceDetectorRef.current = new maybeWindow.FaceDetector({ fastMode: false, maxDetectedFaces: 6 });
     }
   }, []);
 
@@ -731,12 +738,15 @@ export default function InterviewLauncher({
     let noFaceFrameCount = 0;       // consecutive frames with no face detected
     let hardOcclusionFrameCount = 0;
     let frameCounter = 0;           // throttle: only analyse every 6th frame
-    const NO_FACE_TRIGGER_FRAMES = 170; // relaxed to reduce false positives in low-light streams
+    const NO_FACE_TRIGGER_FRAMES = 55;
+    const HARD_OCCLUSION_TRIGGER_FRAMES = 12;
     let lastLoggedNoFace = false;
     let detectorBusy = false;
     let detectorFaceFrames = 0;
-    let multiFacePositiveFrames = 0;
-    let multiFaceNegativeFrames = 0;
+    let detectorMultiFaceFrames = 0;
+    let heuristicMultiFacePositiveFrames = 0;
+    let heuristicMultiFaceNegativeFrames = 0;
+    let heuristicFaceFrames = 0;
     let prevFrameData: Uint8ClampedArray | null = null;
     let lowMotionFrames = 0;
     const detectorCanvas = document.createElement("canvas");
@@ -755,9 +765,10 @@ export default function InterviewLauncher({
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      canvas.width = 80; canvas.height = 60;  // smaller = faster
-      ctx.drawImage(video, 0, 0, 80, 60);
-      const data = ctx.getImageData(0, 0, 80, 60).data;
+      canvas.width = 128;
+      canvas.height = 96;
+      ctx.drawImage(video, 0, 0, 128, 96);
+      const data = ctx.getImageData(0, 0, 128, 96).data;
 
       let frameMotion = 0;
       if (prevFrameData) {
@@ -772,74 +783,20 @@ export default function InterviewLauncher({
       }
       prevFrameData = new Uint8ClampedArray(data);
 
-      // Compute brightness for each of 16 blocks (4x4 grid)
-      const blockBrightness: number[] = [];
-      let redDominant = 0;
-      let greenDominant = 0;
-      let blueDominant = 0;
-      let sampled = 0;
-      let edgeSignal = 0;
-      for (let by = 0; by < 4; by++) {
-        for (let bx = 0; bx < 4; bx++) {
-          let sum = 0, count = 0;
-          for (let y = by * 15; y < (by + 1) * 15; y++) {
-            for (let x = bx * 20; x < (bx + 1) * 20; x++) {
-              const i = (y * 80 + x) * 4;
-              const r = data[i];
-              const g = data[i + 1];
-              const b = data[i + 2];
-              const luma = r * 0.299 + g * 0.587 + b * 0.114;
-              sum += luma;
-              count++;
-              sampled++;
-              if (r > g + 12 && r > b + 12) redDominant++;
-              if (g > r + 12 && g > b + 12) greenDominant++;
-              if (b > r + 12 && b > g + 12) blueDominant++;
-              if (x > 0 && y > 0 && x % 3 === 0 && y % 3 === 0) {
-                const left = ((y * 80 + (x - 1)) * 4);
-                const up = ((((y - 1) * 80) + x) * 4);
-                const leftLuma = data[left] * 0.299 + data[left + 1] * 0.587 + data[left + 2] * 0.114;
-                const upLuma = data[up] * 0.299 + data[up + 1] * 0.587 + data[up + 2] * 0.114;
-                edgeSignal += Math.abs(luma - leftLuma) + Math.abs(luma - upLuma);
-              }
-            }
-          }
-          blockBrightness.push(sum / count);
-        }
-      }
-
-      const mean = blockBrightness.reduce((a, b) => a + b, 0) / blockBrightness.length;
-      const variance = blockBrightness.reduce((a, b) => a + (b - mean) ** 2, 0) / blockBrightness.length;
-
-      // A valid face frame requires usable texture + lighting.
-      // This catches covered camera (finger/palm), plain surfaces, and dark frames.
-      const brightPixels = blockBrightness.filter(b => b > 60).length;
-      const centerBlocks = [5, 6, 9, 10].map((idx) => blockBrightness[idx]);
-      const centerMean = centerBlocks.reduce((a, b) => a + b, 0) / centerBlocks.length;
-      const centerVariance = centerBlocks.reduce((a, b) => a + (b - centerMean) ** 2, 0) / centerBlocks.length;
-      const edgeDensity = edgeSignal / Math.max(1, sampled);
-      const dominantRatio = Math.max(redDominant, greenDominant, blueDominant) / Math.max(1, sampled);
-
-      const hardOcclusion =
-        mean < 8 ||
-        (dominantRatio > 0.95 && edgeDensity < 4.2) ||
-        (variance < 55 && edgeDensity < 4.8);
-
-      const likelyOccluded =
-        mean < 9 ||
-        (dominantRatio > 0.93 && edgeDensity < 4.6) ||
-        (variance < 58 && centerVariance < 14);
-
-      const hasFaceHeuristic =
-        !hardOcclusion &&
-        !likelyOccluded &&
-        mean > 10 &&
-        brightPixels >= 2 &&
-        (variance > 45 || edgeDensity > 3.8);
+      const frameAssessment = analyzeCameraFrameData(data, 128, 96);
+      const hardOcclusion = frameAssessment.hardOcclusion;
+      const likelyOccluded = frameAssessment.likelyOccluded;
 
       // Prefer real face detection when supported to reduce false positives.
       if (!detectorBusy && faceDetectorRef.current && frameCounter % 6 === 0) {
         detectorBusy = true;
+        const targetW = Math.min(640, Math.max(320, video.videoWidth || 320));
+        const sourceAspect = (video.videoHeight || 240) / Math.max(1, video.videoWidth || 320);
+        const targetH = Math.min(480, Math.max(240, Math.round(targetW * sourceAspect)));
+        if (detectorCanvas.width !== targetW || detectorCanvas.height !== targetH) {
+          detectorCanvas.width = targetW;
+          detectorCanvas.height = targetH;
+        }
         if (detectorCtx) {
           detectorCtx.drawImage(video, 0, 0, detectorCanvas.width, detectorCanvas.height);
         }
@@ -849,7 +806,9 @@ export default function InterviewLauncher({
             const validFaces = (faces || []).filter((f) => {
               const w = Number(f.boundingBox?.width || 0);
               const h = Number(f.boundingBox?.height || 0);
-              return w > 4 && h > 4;
+              const areaRatio = (w * h) / (detectorCanvas.width * detectorCanvas.height);
+              const aspect = w / Math.max(1, h);
+              return w >= 18 && h >= 18 && areaRatio >= 0.012 && aspect > 0.5 && aspect < 2.1;
             });
             if (validFaces.length >= 1) {
               const ranked = [...validFaces].sort((a, b) => {
@@ -866,20 +825,9 @@ export default function InterviewLauncher({
               const areaRatio = (Number(bb.width || 0) * Number(bb.height || 0)) / (detectorCanvas.width * detectorCanvas.height);
               currentFaceCenterRef.current = { x: cx, y: cy, areaRatio };
             }
-            if (validFaces.length > 1) {
-              multiFacePositiveFrames += 1;
-              multiFaceNegativeFrames = 0;
-            } else {
-              multiFaceNegativeFrames += 1;
-              multiFacePositiveFrames = 0;
-            }
-            if (multiFacePositiveFrames >= 2) {
-              setMultipleFaces(true);
-            } else if (multiFaceNegativeFrames >= 3) {
-              setMultipleFaces(false);
-            }
+            detectorMultiFaceFrames = validFaces.length > 1 ? 9 : Math.max(0, detectorMultiFaceFrames - 3);
             if (validFaces.length >= 1) {
-              detectorFaceFrames = 8;
+              detectorFaceFrames = 12;
               noFaceFrameCount = 0;
               hardOcclusionFrameCount = 0;
               if (lastLoggedNoFace) lastLoggedNoFace = false;
@@ -894,8 +842,43 @@ export default function InterviewLauncher({
           });
       }
 
-      const hasFace = hasFaceHeuristic || detectorFaceFrames > 0;
+      const regionSummary = estimateFaceRegionSummary(data, 128, 96);
+      const heuristicFaceRegions = regionSummary.count;
+      const heuristicFacePresent =
+        !hardOcclusion &&
+        frameAssessment.usableFrame &&
+        (regionSummary.largeCount >= 1 || regionSummary.largestAreaRatio >= 0.025);
+      if (heuristicFacePresent) {
+        heuristicFaceFrames = Math.min(12, heuristicFaceFrames + 1);
+      } else {
+        heuristicFaceFrames = Math.max(0, heuristicFaceFrames - 2);
+      }
+
+      const heuristicMultipleFaces =
+        frameAssessment.usableFrame &&
+        (regionSummary.largeCount >= 2 || (heuristicFaceRegions >= 2 && regionSummary.secondLargestAreaRatio >= 0.014));
+      if (heuristicMultipleFaces) {
+        heuristicMultiFacePositiveFrames += 1;
+        heuristicMultiFaceNegativeFrames = 0;
+      } else {
+        heuristicMultiFaceNegativeFrames += 1;
+        heuristicMultiFacePositiveFrames = Math.max(0, heuristicMultiFacePositiveFrames - 1);
+      }
+
+      const detectorSupported = Boolean(faceDetectorRef.current);
+      const hasFace = detectorSupported
+        ? detectorFaceFrames > 0 || (detectorBusy && heuristicFaceFrames > 0)
+        : heuristicFaceFrames > 0;
+
+      const combinedMultiFace = detectorMultiFaceFrames > 0 || heuristicMultiFacePositiveFrames >= 3;
+      if (combinedMultiFace) {
+        setMultipleFaces(true);
+      } else if (heuristicMultiFaceNegativeFrames >= 5 && detectorMultiFaceFrames === 0) {
+        setMultipleFaces(false);
+      }
+
       if (detectorFaceFrames > 0) detectorFaceFrames -= 1;
+      if (detectorMultiFaceFrames > 0) detectorMultiFaceFrames -= 1;
 
       const suspiciousFreezeEligible = listeningRef.current && micLevelRef.current > 18 && hasFace && !multipleFaces;
       if (suspiciousFreezeEligible && prevFrameData && frameMotion < 0.55) {
@@ -915,6 +898,7 @@ export default function InterviewLauncher({
       } else {
         noFaceFrameCount = 0;
         hardOcclusionFrameCount = 0;
+        setCameraObstructionDetected(false);
         if (lastLoggedNoFace) {
           lastLoggedNoFace = false;
           setFaceVisible(true);
@@ -923,11 +907,45 @@ export default function InterviewLauncher({
         }
       }
 
-      // Only declare "no face" after sustained absence (avoids flicker on blink/look-away)
-      if (noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES && hardOcclusionFrameCount >= 65) {
+      if (hardOcclusionFrameCount >= HARD_OCCLUSION_TRIGGER_FRAMES) {
+        setCameraObstructionDetected(true);
         setFaceVisible(false);
         if (!lastLoggedNoFace) {
-          logSecurityEvent("Face not visible in camera.", "face_not_visible", "high");
+          logSecurityEvent(
+            "Camera appears blocked or tampered (covered lens / unusable frame).",
+            "camera_obstruction_detected",
+            "critical",
+            {
+              mean: Number(frameAssessment.mean.toFixed(2)),
+              variance: Number(frameAssessment.variance.toFixed(2)),
+              edgeDensity: Number(frameAssessment.edgeDensity.toFixed(2)),
+              dominantRatio: Number(frameAssessment.dominantRatio.toFixed(3)),
+              centerVariance: Number(frameAssessment.centerVariance.toFixed(2)),
+            }
+          );
+          lastLoggedNoFace = true;
+        }
+        return;
+      }
+
+      // Declare no-face after sustained absence.
+      if (
+        noFaceFrameCount >= NO_FACE_TRIGGER_FRAMES &&
+        (detectorSupported || hardOcclusionFrameCount >= 6 || likelyOccluded || heuristicFaceFrames === 0)
+      ) {
+        setCameraObstructionDetected(hardOcclusionFrameCount >= 6 || likelyOccluded);
+        setFaceVisible(false);
+        if (!lastLoggedNoFace) {
+          let noFaceSnapshot = "";
+          try {
+            noFaceSnapshot = canvas.toDataURL("image/jpeg", 0.8);
+          } catch {
+            // no-op
+          }
+          logSecurityEvent("Face not visible in camera.", "face_not_visible", "high", {
+            camera_snapshot: noFaceSnapshot,
+            noFaceFrameCount,
+          });
           lastLoggedNoFace = true;
         }
       }
@@ -948,12 +966,12 @@ export default function InterviewLauncher({
       setFaceViolationCountdown(null);
       return;
     }
-    if (!multipleFaces && elapsedSecRef.current < 25) {
+    if (!multipleFaces && !cameraObstructionDetected && elapsedSecRef.current < 25) {
       // Grace period at interview start to avoid false-positive exits during camera warm-up.
       return;
     }
     if (faceTimerRef.current) return;
-    let remaining = multipleFaces ? 8 : 20;
+    let remaining = multipleFaces ? 8 : cameraObstructionDetected ? 6 : 10;
     setFaceViolationCountdown(remaining);
     faceTimerRef.current = window.setInterval(() => {
       remaining -= 1;
@@ -963,23 +981,15 @@ export default function InterviewLauncher({
         window.clearInterval(faceTimerRef.current);
         faceTimerRef.current = null;
       }
-      setCheatingTagged(true);
-      logSecurityEvent(
-        "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
+      const timeoutSnapshot = captureVideoSnapshot(userVideoRef.current, 320, 240);
+      warnOnlySecurityViolation(
+        "Face compliance warning: no face or multiple faces persisted for more than 10 seconds.",
         multipleFaces ? "multiple_faces_detected" : "face_not_visible_timeout",
-        "critical",
-        { multipleFaces }
+        { multipleFaces, camera_snapshot: timeoutSnapshot }
       );
-      void saveTurn(
-        "assistant",
-        "Cheating detected: face violation — no face or multiple faces for >10 seconds.",
-        "proctor"
-      );
-      setMessage("Interview ended: Face compliance violation.");
-      void endInterview();
     }, 1000);
     return () => { if (faceTimerRef.current) { window.clearInterval(faceTimerRef.current); faceTimerRef.current = null; } };
-  }, [status, cheatingTagged, faceVisible, multipleFaces]);
+  }, [status, cheatingTagged, faceVisible, multipleFaces, cameraObstructionDetected]);
 
   useEffect(() => {
     if (status !== "in_progress" || cheatingTagged) return;
@@ -1040,7 +1050,7 @@ export default function InterviewLauncher({
           screenBlackCountRef.current += 1;
           if (screenBlackCountRef.current >= 3) {
             terminateInterviewForSecurity(
-              "Cheating detected: blacked-out screen share feed.",
+              "Blacked-out screen share feed detected.",
               "screen_black_frame_timeout",
               {
                 avgBrightness: Number(avgBrightness.toFixed(2)),
@@ -1073,6 +1083,8 @@ export default function InterviewLauncher({
 
         if (meanDelta > 9.2 || changedRatio > 0.2) {
           setScreenChanged(true);
+          const beforeSnapshot = previousScreen || captureScreenSnapshot();
+          const afterSnapshot = currentScreen || captureScreenSnapshot();
           logSecurityEvent(
             "Screen content changed during interview.",
             "screen_change_detected",
@@ -1080,8 +1092,8 @@ export default function InterviewLauncher({
             {
               meanDelta: Number(meanDelta.toFixed(2)),
               changedRatio: Number(changedRatio.toFixed(3)),
-              prev_screen_snapshot: previousScreen,
-              screen_snapshot: currentScreen,
+              prev_screen_snapshot: beforeSnapshot,
+              screen_snapshot: afterSnapshot,
             }
           );
           const nowMs = Date.now();
@@ -1102,24 +1114,15 @@ export default function InterviewLauncher({
                 window.clearInterval(screenViolationTimerRef.current);
                 screenViolationTimerRef.current = null;
               }
-              setCheatingTagged(true);
-              logSecurityEvent(
-                "Cheating detected: excessive screen switching/content changes.",
+              warnOnlySecurityViolation(
+                "Excessive screen switching/content changes were detected.",
                 "screen_change_timeout",
-                "critical",
                 {
                   burstCount: screenChangeBurstRef.current.count,
-                  prev_screen_snapshot: previousScreen,
-                  screen_snapshot: currentScreen,
+                  prev_screen_snapshot: beforeSnapshot,
+                  screen_snapshot: afterSnapshot,
                 }
               );
-              void saveTurn(
-                "assistant",
-                "Cheating detected: excessive screen switching/content changes.",
-                "proctor"
-              );
-              setMessage("Interview ended: excessive screen switching detected.");
-              void endInterview();
             }, 1000);
           }
         } else if (screenViolationTimerRef.current && meanDelta < 6.5 && changedRatio < 0.08) {
@@ -1245,7 +1248,7 @@ export default function InterviewLauncher({
         lipSyncTimerRef.current = null;
       }
       terminateInterviewForSecurity(
-        "Cheating detected: prolonged speech/lip-motion mismatch.",
+        "Prolonged speech/lip-motion mismatch detected.",
         "lip_sync_timeout",
         { mouthMotionLevel }
       );
@@ -1286,7 +1289,7 @@ export default function InterviewLauncher({
         cameraFreezeTimerRef.current = null;
       }
       terminateInterviewForSecurity(
-        "Cheating detected: static camera feed while speaking.",
+        "Static camera feed detected while speaking.",
         "camera_freeze_timeout"
       );
     }, 1000);
@@ -1434,6 +1437,12 @@ export default function InterviewLauncher({
     eventType: string,
     evidence: Record<string, unknown> = {}
   ) {
+    if (!STRICT_SECURITY_ENFORCEMENT) {
+      logSecurityEvent(details, eventType, "high", evidence);
+      void saveTurn("assistant", `Security warning: ${details}`, "proctor");
+      setMessage(`Security warning: ${details}`);
+      return;
+    }
     if (terminatingForSecurityRef.current) return;
     terminatingForSecurityRef.current = true;
     setCheatingTagged(true);
@@ -1441,6 +1450,16 @@ export default function InterviewLauncher({
     void saveTurn("assistant", details, "proctor");
     setMessage(`Interview ended: ${details}`);
     void endInterview();
+  }
+
+  function warnOnlySecurityViolation(
+    details: string,
+    eventType: string,
+    evidence: Record<string, unknown> = {}
+  ) {
+    logSecurityEvent(details, eventType, "high", evidence);
+    void saveTurn("assistant", `Security warning: ${details}`, "proctor");
+    setMessage(`Security warning: ${details}`);
   }
 
   function logSecurityEvent(
@@ -1451,7 +1470,8 @@ export default function InterviewLauncher({
   ) {
     const nowMs = Date.now();
     const last = lastEventLoggedAtRef.current[eventType] || 0;
-    if (nowMs - last < 6000) return; // de-noise repeated events
+    const minIntervalMs = eventType === "screen_change_detected" ? 900 : 6000;
+    if (nowMs - last < minIntervalMs) return; // de-noise repeated events
     lastEventLoggedAtRef.current[eventType] = nowMs;
     const now = new Date().toLocaleTimeString();
     setSecurityEvents((prev) => [{ time: now, event, eventType, severity }, ...prev].slice(0, 20));
@@ -1598,6 +1618,198 @@ export default function InterviewLauncher({
     setMicVerificationTranscript("");
     setMicVerificationError("");
     setMicVerificationScore(0);
+  }
+
+  function analyzeCameraFrameData(data: Uint8ClampedArray, width: number, height: number): CameraFrameAssessment {
+    const blockCols = 4;
+    const blockRows = 4;
+    const blockW = Math.max(1, Math.floor(width / blockCols));
+    const blockH = Math.max(1, Math.floor(height / blockRows));
+    const blockBrightness: number[] = [];
+    let redDominant = 0;
+    let greenDominant = 0;
+    let blueDominant = 0;
+    let sampled = 0;
+    let edgeSignal = 0;
+
+    for (let by = 0; by < blockRows; by += 1) {
+      for (let bx = 0; bx < blockCols; bx += 1) {
+        const startX = bx * blockW;
+        const endX = bx === blockCols - 1 ? width : Math.min(width, (bx + 1) * blockW);
+        const startY = by * blockH;
+        const endY = by === blockRows - 1 ? height : Math.min(height, (by + 1) * blockH);
+        let sum = 0;
+        let count = 0;
+        for (let y = startY; y < endY; y += 1) {
+          for (let x = startX; x < endX; x += 1) {
+            const i = (y * width + x) * 4;
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const luma = r * 0.299 + g * 0.587 + b * 0.114;
+            sum += luma;
+            count += 1;
+            sampled += 1;
+            if (r > g + 12 && r > b + 12) redDominant += 1;
+            if (g > r + 12 && g > b + 12) greenDominant += 1;
+            if (b > r + 12 && b > g + 12) blueDominant += 1;
+            if (x > 0 && y > 0 && x % 3 === 0 && y % 3 === 0) {
+              const left = (y * width + (x - 1)) * 4;
+              const up = (((y - 1) * width) + x) * 4;
+              const leftLuma = data[left] * 0.299 + data[left + 1] * 0.587 + data[left + 2] * 0.114;
+              const upLuma = data[up] * 0.299 + data[up + 1] * 0.587 + data[up + 2] * 0.114;
+              edgeSignal += Math.abs(luma - leftLuma) + Math.abs(luma - upLuma);
+            }
+          }
+        }
+        blockBrightness.push(count ? sum / count : 0);
+      }
+    }
+
+    const mean = blockBrightness.reduce((a, b) => a + b, 0) / Math.max(1, blockBrightness.length);
+    const variance =
+      blockBrightness.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, blockBrightness.length);
+    const edgeDensity = edgeSignal / Math.max(1, sampled);
+    const dominantRatio = Math.max(redDominant, greenDominant, blueDominant) / Math.max(1, sampled);
+    const brightBlocks = blockBrightness.filter((b) => b > 60).length;
+    const centerIndices = [5, 6, 9, 10];
+    const centerValues = centerIndices
+      .map((idx) => blockBrightness[idx])
+      .filter((v) => Number.isFinite(v));
+    const centerMean = centerValues.reduce((a, b) => a + b, 0) / Math.max(1, centerValues.length);
+    const centerVariance =
+      centerValues.reduce((a, b) => a + (b - centerMean) ** 2, 0) / Math.max(1, centerValues.length);
+
+    const hardOcclusion =
+      mean < 8.5 ||
+      (dominantRatio > 0.9 && edgeDensity < 6.4) ||
+      (variance < 62 && centerVariance < 16) ||
+      (variance < 52 && edgeDensity < 5.1);
+
+    const likelyOccluded =
+      mean < 10 ||
+      (dominantRatio > 0.87 && edgeDensity < 7.2) ||
+      (variance < 70 && centerVariance < 20);
+
+    const usableFrame =
+      !hardOcclusion &&
+      !likelyOccluded &&
+      brightBlocks >= 2 &&
+      mean > 11 &&
+      (variance > 48 || edgeDensity > 4.2);
+
+    return {
+      mean,
+      variance,
+      edgeDensity,
+      dominantRatio,
+      centerVariance,
+      brightBlocks,
+      hardOcclusion,
+      likelyOccluded,
+      usableFrame,
+    };
+  }
+
+  function estimateFaceRegionSummary(data: Uint8ClampedArray, width: number, height: number): FaceRegionSummary {
+    const sampleW = Math.max(8, Math.floor(width / 2));
+    const sampleH = Math.max(8, Math.floor(height / 2));
+    const mask = new Uint8Array(sampleW * sampleH);
+
+    for (let sy = 0; sy < sampleH; sy += 1) {
+      for (let sx = 0; sx < sampleW; sx += 1) {
+        const srcX = Math.min(width - 1, sx * 2);
+        const srcY = Math.min(height - 1, sy * 2);
+        const idx = (srcY * width + srcX) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const y = 0.299 * r + 0.587 * g + 0.114 * b;
+        const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+        const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+        const skinLike = y > 35 && y < 235 && cb >= 77 && cb <= 127 && cr >= 133 && cr <= 173;
+        mask[sy * sampleW + sx] = skinLike ? 1 : 0;
+      }
+    }
+
+    const visited = new Uint8Array(sampleW * sampleH);
+    const queueX = new Int16Array(sampleW * sampleH);
+    const queueY = new Int16Array(sampleW * sampleH);
+    const areaRatios: number[] = [];
+
+    for (let y = 0; y < sampleH; y += 1) {
+      for (let x = 0; x < sampleW; x += 1) {
+        const startIdx = y * sampleW + x;
+        if (!mask[startIdx] || visited[startIdx]) continue;
+        let qStart = 0;
+        let qEnd = 0;
+        queueX[qEnd] = x;
+        queueY[qEnd] = y;
+        qEnd += 1;
+        visited[startIdx] = 1;
+        let area = 0;
+        let minX = x;
+        let maxX = x;
+        let minY = y;
+        let maxY = y;
+
+        while (qStart < qEnd) {
+          const cx = queueX[qStart];
+          const cy = queueY[qStart];
+          qStart += 1;
+          area += 1;
+          if (cx < minX) minX = cx;
+          if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy;
+          if (cy > maxY) maxY = cy;
+          const neighbors = [
+            [cx + 1, cy],
+            [cx - 1, cy],
+            [cx, cy + 1],
+            [cx, cy - 1],
+          ];
+          for (const [nx, ny] of neighbors) {
+            if (nx < 0 || ny < 0 || nx >= sampleW || ny >= sampleH) continue;
+            const nIdx = ny * sampleW + nx;
+            if (!mask[nIdx] || visited[nIdx]) continue;
+            visited[nIdx] = 1;
+            queueX[qEnd] = nx;
+            queueY[qEnd] = ny;
+            qEnd += 1;
+          }
+        }
+
+        const boxW = maxX - minX + 1;
+        const boxH = maxY - minY + 1;
+        const aspect = boxW / Math.max(1, boxH);
+        const compactEnough = area >= 30 && boxW >= 5 && boxH >= 5 && aspect > 0.45 && aspect < 2.4;
+        if (compactEnough) {
+          areaRatios.push(area / (sampleW * sampleH));
+        }
+      }
+    }
+    areaRatios.sort((a, b) => b - a);
+    const largestAreaRatio = areaRatios[0] || 0;
+    const secondLargestAreaRatio = areaRatios[1] || 0;
+    const largeCount = areaRatios.filter((r) => r >= 0.02).length;
+    return {
+      count: areaRatios.length,
+      largeCount,
+      largestAreaRatio,
+      secondLargestAreaRatio,
+    };
+  }
+
+  function assessLiveCameraFrame(video: HTMLVideoElement | null): CameraFrameAssessment | null {
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0 || video.readyState < 2) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = 80;
+    canvas.height = 60;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, 80, 60);
+    const frame = ctx.getImageData(0, 0, 80, 60).data;
+    return analyzeCameraFrameData(frame, 80, 60);
   }
 
   function snapshotDifferenceScore(prevDataUrl: string, nextDataUrl: string): Promise<number> {
@@ -1897,14 +2109,49 @@ export default function InterviewLauncher({
         const height = Number(camSettings.height || 0);
         const fps = Number(camSettings.frameRate || 0);
         if (width < 640 || height < 480 || (fps > 0 && fps < 15)) {
-          setMessage("Camera is active, but quality is low. Improve lighting or switch camera for best interview quality.");
+          camStream.getTracks().forEach((t) => t.stop());
+          userStreamRef.current = null;
+          if (userVideoRef.current) userVideoRef.current.srcObject = null;
+          setCameraOn(false);
+          setCheckState("failed");
+          setMessage("Camera quality failed: minimum 640x480 and 15 FPS required.");
           logSecurityEvent(
-            "Camera quality is below recommended threshold.",
+            "Camera quality is below required threshold.",
             "camera_quality_low",
-            "low",
+            "high",
             { width, height, fps }
           );
+          return;
         }
+      }
+      let setupAssessment: CameraFrameAssessment | null = null;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 220));
+        setupAssessment = assessLiveCameraFrame(userVideoRef.current);
+        if (setupAssessment) break;
+      }
+      if (!setupAssessment || setupAssessment.hardOcclusion || !setupAssessment.usableFrame) {
+        camStream.getTracks().forEach((t) => t.stop());
+        userStreamRef.current = null;
+        if (userVideoRef.current) userVideoRef.current.srcObject = null;
+        setCameraOn(false);
+        setCheckState("failed");
+        setMessage("Camera security check failed. Uncover lens, improve lighting, and retry.");
+        logSecurityEvent(
+          "Camera verification failed due to obstructed/low-integrity camera frame.",
+          "camera_security_precheck_failed",
+          "high",
+          setupAssessment
+            ? {
+                mean: Number(setupAssessment.mean.toFixed(2)),
+                variance: Number(setupAssessment.variance.toFixed(2)),
+                edgeDensity: Number(setupAssessment.edgeDensity.toFixed(2)),
+                dominantRatio: Number(setupAssessment.dominantRatio.toFixed(3)),
+                brightBlocks: setupAssessment.brightBlocks,
+              }
+            : { reason: "frame_unavailable" }
+        );
+        return;
       }
       setCameraOn(true);
       setCheckState("passed");
@@ -2003,7 +2250,7 @@ export default function InterviewLauncher({
           logSecurityEvent("Screen sharing stopped by candidate.", "screen_share_stopped", "critical");
           if (statusRef.current === "in_progress") {
             terminateInterviewForSecurity(
-              "Cheating detected: screen sharing stopped during interview.",
+              "Screen sharing stopped during the interview.",
               "screen_share_stopped_timeout"
             );
           }
@@ -2060,6 +2307,25 @@ export default function InterviewLauncher({
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       setMessage("Unable to capture photo right now.");
+      return;
+    }
+    const frameAssessment = assessLiveCameraFrame(video);
+    if (!frameAssessment || frameAssessment.hardOcclusion || !frameAssessment.usableFrame) {
+      setCameraVerificationHint("Camera frame is blocked/unclear. Keep lens uncovered and face well lit.");
+      setMessage("Camera quality/security check failed. Adjust camera and capture again.");
+      logSecurityEvent(
+        "Camera snapshot rejected due to obstructed or low-integrity frame.",
+        "camera_snapshot_rejected",
+        "high",
+        frameAssessment
+          ? {
+              mean: Number(frameAssessment.mean.toFixed(2)),
+              variance: Number(frameAssessment.variance.toFixed(2)),
+              edgeDensity: Number(frameAssessment.edgeDensity.toFixed(2)),
+              dominantRatio: Number(frameAssessment.dominantRatio.toFixed(3)),
+            }
+          : { reason: "frame_unavailable" }
+      );
       return;
     }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -2165,7 +2431,7 @@ export default function InterviewLauncher({
       return;
     }
     terminateInterviewForSecurity(
-      "Cheating detected: random liveness/security challenge failed.",
+      "Random liveness/security challenge failed.",
       "random_security_challenge_failed",
       {
         diff: Number(diff.toFixed(2)),
@@ -2566,7 +2832,7 @@ export default function InterviewLauncher({
         );
         if (statusRef.current === "in_progress") {
           terminateInterviewForSecurity(
-            "Cheating detected: non-fullscreen screen sharing.",
+            "Non-fullscreen screen sharing detected.",
             "screen_share_not_fullscreen_timeout",
             { displaySurface }
           );
@@ -2586,7 +2852,7 @@ export default function InterviewLauncher({
           logSecurityEvent("Screen sharing ended while interview is active.", "screen_share_stopped", "critical");
           if (statusRef.current === "in_progress") {
             terminateInterviewForSecurity(
-              "Cheating detected: screen sharing stopped during interview.",
+              "Screen sharing stopped during the interview.",
               "screen_share_stopped_timeout"
             );
           }
@@ -3298,7 +3564,7 @@ export default function InterviewLauncher({
                     {faceViolationCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-orange-600/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">⚠️</span>
-                        <span>FACE NOT VISIBLE — Look directly at the camera. Interview terminates in {faceViolationCountdown}s</span>
+                        <span>FACE VISIBILITY WARNING — Keep your face clearly visible in {faceViolationCountdown}s.</span>
                       </div>
                     )}
                     {securityCountdown !== null && (
@@ -3310,25 +3576,25 @@ export default function InterviewLauncher({
                     {tabCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">🚨</span>
-                        <span>TAB SWITCH DETECTED — Return to interview in {tabCountdown}s or interview terminates</span>
+                        <span>TAB SWITCH DETECTED — Return to interview in {tabCountdown}s.</span>
                       </div>
                     )}
                     {screenViolationCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">🚨</span>
-                        <span>SCREEN SWITCHING DETECTED — Return to a stable screen in {screenViolationCountdown}s or interview terminates</span>
+                        <span>SCREEN SWITCHING DETECTED — Return to a stable screen in {screenViolationCountdown}s.</span>
                       </div>
                     )}
                     {lipSyncViolationCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">🚨</span>
-                        <span>SPEECH/LIP MISMATCH DETECTED — Speak clearly while face is visible in {lipSyncViolationCountdown}s or interview terminates</span>
+                        <span>SPEECH/LIP MISMATCH DETECTED — Speak clearly while face is visible in {lipSyncViolationCountdown}s.</span>
                       </div>
                     )}
                     {cameraFreezeCountdown !== null && (
                       <div className="flex items-center justify-center gap-3 bg-rose-700/95 px-6 py-3 text-sm font-bold text-white backdrop-blur-md shadow-2xl">
                         <span className="animate-pulse text-lg">🚨</span>
-                        <span>STATIC CAMERA FEED DETECTED — Move naturally while speaking in {cameraFreezeCountdown}s or interview terminates</span>
+                        <span>STATIC CAMERA FEED DETECTED — Move naturally while speaking in {cameraFreezeCountdown}s.</span>
                       </div>
                     )}
                   </div>

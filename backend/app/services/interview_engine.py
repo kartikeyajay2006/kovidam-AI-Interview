@@ -21,6 +21,9 @@ QUESTION_BANK = [
 
 PII_LINE_HINTS = ("email", "mail", "phone", "mobile", "address", "location", "contact", "github.com", "linkedin.com")
 INTERVIEW_COMPLETE_SENTINEL = "__INTERVIEW_COMPLETE__"
+WINDDOWN_START_MINUTES = 12.0
+HARD_STOP_MINUTES = 15.0
+FINAL_MINUTE_NOTICE_MINUTES = 14.0
 DANGLING_TAIL_TOKENS = {
     "in",
     "on",
@@ -985,6 +988,7 @@ def generate_interview_question(
     human_question_bank: list[dict],
     history: list[dict],
     candidate_name: str = "",
+    elapsed_minutes: float | None = None,
 ) -> tuple[str, str]:
     cleaned_history = _trim_history(history)
     settings = get_settings()
@@ -1098,6 +1102,7 @@ def generate_interview_question(
     stage = _infer_interview_stage(cleaned_history)
     _ = _sanitize_resume_text(resume_text)
     _ = resume_skills
+    elapsed = float(elapsed_minutes or 0.0)
 
     if last_candidate_turn and last_assistant_question:
         depth = _evaluate_answer_depth(last_candidate_turn)
@@ -1155,8 +1160,46 @@ def generate_interview_question(
         )
         return refined_intro, "source=intro state=interview_start fallback=local"
 
-    if len(asked_questions) >= 14:
-        return INTERVIEW_COMPLETE_SENTINEL, "source=flow_guard state=close"
+    last_q_low = asked_questions[-1].lower() if asked_questions else ""
+    last_role = str(cleaned_history[-1].get("role") or "").strip().lower() if cleaned_history else ""
+    has_time_notice = any("scheduled interview time" in q.lower() for q in asked_questions[-8:])
+    has_final_minute_prompt = any("final 1-minute closing summary" in q.lower() for q in asked_questions[-8:])
+
+    if len(asked_questions) >= 14 and elapsed < FINAL_MINUTE_NOTICE_MINUTES:
+        return (
+            "As we begin wrapping up, what is one key engineering lesson from this interview, and what would you improve first in your most recent project?",
+            f"source=flow_guard state=winddown elapsed_min={elapsed:.2f}",
+        )
+
+    if elapsed >= FINAL_MINUTE_NOTICE_MINUTES and not has_time_notice:
+        return (
+            "We are nearing the end of our scheduled interview time. Please share the most important point you want us to remember about your fit for this role in about one minute.",
+            f"source=time_guard state=one_minute_notice elapsed_min={elapsed:.2f}",
+        )
+
+    if elapsed >= HARD_STOP_MINUTES:
+        if not has_final_minute_prompt:
+            return (
+                "We are now at the end of our scheduled time. Please give your final 1-minute closing summary, including your strongest technical contribution and the immediate value you can add in this role.",
+                f"source=time_guard state=final_1min_prompt elapsed_min={elapsed:.2f}",
+            )
+        if has_final_minute_prompt and last_role == "candidate":
+            return INTERVIEW_COMPLETE_SENTINEL, f"source=time_guard state=soft_close_after_final elapsed_min={elapsed:.2f}"
+        return (
+            "Please share your final closing summary now so we can conclude the interview professionally.",
+            f"source=time_guard state=final_1min_reminder elapsed_min={elapsed:.2f}",
+        )
+
+    if elapsed >= WINDDOWN_START_MINUTES:
+        if "as we begin wrapping up" in last_q_low:
+            return (
+                "Before we close, what is one concrete technical improvement you would make in the next 30 days, and how would you measure success?",
+                f"source=time_guard state=winddown_followup elapsed_min={elapsed:.2f}",
+            )
+        return (
+            "As we begin wrapping up, what is one key engineering lesson from this interview, and what would you improve first in your most recent project?",
+            f"source=time_guard state=winddown elapsed_min={elapsed:.2f}",
+        )
 
     if stage == "close":
         return (

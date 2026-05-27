@@ -1,5 +1,6 @@
 import hashlib
 import json as _json
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -777,6 +778,11 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         stored_history.append({"role": t.role, "content": content})
     payload_history = [InterviewTurn(role=t.role, content=t.content).model_dump() for t in payload.history]
     merged_history = stored_history if stored_history else payload_history
+    interview_started_at = stored_turns[0].created_at if stored_turns else interview.created_at
+    elapsed_minutes = max(
+        0.0,
+        (datetime.utcnow() - interview_started_at).total_seconds() / 60.0,
+    ) if interview_started_at else 0.0
 
     # Load resume from DB first; fall back to payload
     try:
@@ -799,6 +805,7 @@ def get_next_question(interview_id: UUID, payload: InterviewQuestionRequest, db:
         human_question_bank=payload.human_question_bank or _parse_job_questions(job.question_bank) or _default_human_question_bank(),
         history=merged_history,
         candidate_name=candidate.name,
+        elapsed_minutes=elapsed_minutes,
     )
     if question == INTERVIEW_COMPLETE_SENTINEL:
         interview.status = "completed"
