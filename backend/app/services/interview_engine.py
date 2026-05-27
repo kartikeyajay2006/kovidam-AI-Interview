@@ -37,6 +37,8 @@ DANGLING_TAIL_TOKENS = {
     "particularly",
     "especially",
 }
+TOPIC_MIN_QUESTIONS = 5
+TOPIC_MAX_QUESTIONS = 6
 
 
 def _redact_pii(text: str) -> str:
@@ -403,6 +405,7 @@ def _postprocess_question(
     parsed_sections: dict,
     target_competency: str,
     role_title: str,
+    topic_plan: dict | None = None,
 ) -> str:
     q = _ensure_single_question_sentence(question)
     if not q:
@@ -411,16 +414,73 @@ def _postprocess_question(
     q = _de_genericize_question(q, cleaned_history, role_title, parsed_sections, target_competency)
     q = _trim_question_to_word_limit(q, max_words=36)
     q = _repair_dangling_question_tail(q, role_title)
+    if _is_low_signal_question(q):
+        q = _beast_followup_question(
+            cleaned_history=cleaned_history,
+            role_title=role_title,
+            target_competency=target_competency,
+            last_question=_last_turn_by_role(cleaned_history, "assistant"),
+            last_answer=_last_turn_by_role(cleaned_history, "candidate"),
+            axis_hint=str((topic_plan or {}).get("next_axis_hint") or _next_axis_hint(cleaned_history)),
+            anchor_override=(topic_plan or {}).get("target_anchor", ""),
+        )
+        q = _trim_question_to_word_limit(_ensure_single_question_sentence(q), max_words=36)
 
     assistant_questions = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"]
     for prev in assistant_questions[-8:]:
         if _jaccard_similarity(q, prev) >= 0.62:
             return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
+    if _is_opening_repetitive(q, assistant_questions):
+        q = _beast_followup_question(
+            cleaned_history=cleaned_history,
+            role_title=role_title,
+            target_competency=target_competency,
+            last_question=_last_turn_by_role(cleaned_history, "assistant"),
+            last_answer=_last_turn_by_role(cleaned_history, "candidate"),
+            axis_hint=str((topic_plan or {}).get("next_axis_hint") or _next_axis_hint(cleaned_history)),
+            anchor_override=(topic_plan or {}).get("target_anchor", ""),
+        )
+        q = _trim_question_to_word_limit(_ensure_single_question_sentence(q), max_words=36)
 
     known_numbers = _known_numeric_tokens(cleaned_history, parsed_sections)
     if _question_has_unseen_numbers(q, known_numbers):
         return _fallback_next_question(cleaned_history, role_title, parsed_sections, target_competency)
 
+    if _is_generic_or_repetitive_prompt(q, cleaned_history):
+        q = _beast_followup_question(
+            cleaned_history=cleaned_history,
+            role_title=role_title,
+            target_competency=target_competency,
+            last_question=_last_turn_by_role(cleaned_history, "assistant"),
+            last_answer=_last_turn_by_role(cleaned_history, "candidate"),
+            axis_hint=str((topic_plan or {}).get("next_axis_hint") or _next_axis_hint(cleaned_history)),
+            anchor_override=(topic_plan or {}).get("target_anchor", ""),
+        )
+        q = _trim_question_to_word_limit(_ensure_single_question_sentence(q), max_words=36)
+    elif _is_axis_repetitive(q, cleaned_history):
+        q = _beast_followup_question(
+            cleaned_history=cleaned_history,
+            role_title=role_title,
+            target_competency=target_competency,
+            last_question=_last_turn_by_role(cleaned_history, "assistant"),
+            last_answer=_last_turn_by_role(cleaned_history, "candidate"),
+            axis_hint=str((topic_plan or {}).get("next_axis_hint") or _next_axis_hint(cleaned_history)),
+            anchor_override=(topic_plan or {}).get("target_anchor", ""),
+        )
+        q = _trim_question_to_word_limit(_ensure_single_question_sentence(q), max_words=36)
+    if topic_plan and bool(topic_plan.get("enforce_anchor")):
+        target_anchor = str(topic_plan.get("target_anchor") or "").strip()
+        if target_anchor and not _question_matches_topic(q, target_anchor):
+            q = _beast_followup_question(
+                cleaned_history=cleaned_history,
+                role_title=role_title,
+                target_competency=target_competency,
+                last_question=_last_turn_by_role(cleaned_history, "assistant"),
+                last_answer=_last_turn_by_role(cleaned_history, "candidate"),
+                axis_hint=str((topic_plan or {}).get("next_axis_hint") or _next_axis_hint(cleaned_history)),
+                anchor_override=target_anchor,
+            )
+            q = _trim_question_to_word_limit(_ensure_single_question_sentence(q), max_words=36)
     if q.lower().startswith("candidate "):
         q = q[len("candidate ") :].strip()
     return q
@@ -632,7 +692,7 @@ def _chat_json(settings, prompt: dict, schema_key: str, temperature: float, max_
         raise ValueError("No model configured")
 
     last_exc: Exception | None = None
-    with httpx.Client(timeout=7.5) as client:
+    with httpx.Client(timeout=18.0) as client:
         for model in models:
             body = {
                 "model": model,
@@ -801,11 +861,15 @@ def _generate_ai_next_question(
     parsed_sections: dict,
     cleaned_history: list[dict],
     target_competency: str,
+    topic_plan: dict,
 ) -> tuple[str, str]:
     last_assistant = _last_turn_by_role(cleaned_history, "assistant")
     last_candidate = _last_turn_by_role(cleaned_history, "candidate")
     signal = _answer_signal(last_candidate)
     stage = _infer_interview_stage(cleaned_history)
+    axis_hint = str(topic_plan.get("next_axis_hint") or _next_axis_hint(cleaned_history))
+    recent_assistant_questions = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"][-6:]
+    recent_axes = [_question_axis(q) for q in recent_assistant_questions]
     prompt = {
         "task": "Generate the next interview question based on the full live conversation.",
         "job_context": {
@@ -822,6 +886,12 @@ def _generate_ai_next_question(
             "answer_signal": signal,
         },
         "interview_stage": stage,
+        "axis_diversity_plan": {
+            "next_axis_hint": axis_hint,
+            "recent_axes": recent_axes,
+            "rule": "Avoid repeating the same axis for more than 2 consecutive interviewer questions.",
+        },
+        "topic_continuity_plan": topic_plan,
         "enforced_flow": ["intro", "deep_dive", "stress_test", "behavioral", "close"],
         "target_competency": target_competency,
         "interviewer_rubric": [
@@ -835,6 +905,7 @@ def _generate_ai_next_question(
             "Ask exactly one interviewer-style prompt that ends with a single '?'",
             "Use natural spoken interviewer style, not textbook style",
             "Must connect directly to candidate's latest answer",
+            "Ask like a real hiring panel interviewer for a live technical round",
             "Do not repeat previous questions",
             "Do not invent candidate achievements or metrics",
             "If candidate answer is clear, include a short natural acknowledgement (max 8 words) before the question",
@@ -843,10 +914,18 @@ def _generate_ai_next_question(
             "If candidate answer is strong, ask a deeper follow-up on trade-offs, failure handling, scalability, or debugging",
             "Bias the next question toward target_competency",
             "Prefer specific implementation details over theory",
+            "Topic continuity is mandatory according to topic_continuity_plan",
+            "If topic_streak is below min_topic_questions, stay on current_anchor and do not switch",
+            "If should_switch_topic_now is true, switch to target_anchor and avoid old topic phrasing",
+            "Use axis_diversity_plan.next_axis_hint as the primary question shape",
             "Keep topic continuity: do not switch domains abruptly unless previous answer is fully complete",
             "No topic jump: if depth is insufficient, keep probing same topic",
+            "Do not repeat the same question axis as the last 2 interviewer questions",
+            "Use next_axis_hint when possible",
             "In stress_test stage, challenge constraints and failure modes",
             "In behavioral stage, probe ownership, communication, and decisions under ambiguity",
+            "Prefer scenario-driven prompts over generic prompts",
+            "Avoid coaching language; ask an evaluative interview question",
             "Keep concise and high-signal (max 35 words)",
             "Do not use generic filler lines like 'Good start' or 'Thanks, stay on this question'",
             "Do not produce generic coaching statements; ask a concrete interview question only",
@@ -859,7 +938,7 @@ def _generate_ai_next_question(
         "question",
         0.25,
         110,
-        "You are an expert human interviewer. Ask one relevant, realistic next question only. Return strict JSON.",
+        "You are a senior platform-engineering interviewer running a real hiring loop. Ask one sharp, realistic, evaluative question only. Return strict JSON.",
     )
     return q, "api_success"
 
@@ -964,7 +1043,7 @@ def _build_clarify_prompt(last_question: str, last_answer: str) -> str:
     if not depth["has_result"]:
         missing.append("the measurable result")
     if not missing:
-        return "Could you add one concrete example with your exact steps, decision, and result?"
+        return "Can you give one concrete example with your exact steps, decision, and measurable result?"
     if len(missing) == 1:
         need = missing[0]
     else:
@@ -972,8 +1051,393 @@ def _build_clarify_prompt(last_question: str, last_answer: str) -> str:
     question_focus = _extract_keywords(last_question, limit=1)
     focus_clause = f" on {question_focus[0]}" if question_focus else ""
     if last_question:
-        return f"Before we move on, please finish the same answer{focus_clause} and include {need}."
-    return f"Please answer with {need} so I can evaluate it fairly."
+        return f"Before we move on, can you finish the same answer{focus_clause} and include {need}?"
+    return f"Can you answer with {need} so I can evaluate it fairly?"
+
+
+def _beast_followup_question(
+    *,
+    cleaned_history: list[dict],
+    role_title: str,
+    target_competency: str,
+    last_question: str,
+    last_answer: str,
+    axis_hint: str = "",
+    anchor_override: str = "",
+) -> str:
+    kws = _extract_keywords(last_answer or last_question, limit=2)
+    anchor = anchor_override.strip() or (kws[0] if kws else (role_title.strip() or "your recent project"))
+    anchor_topic_questions = 0
+    for turn in cleaned_history:
+        if turn.get("role") != "assistant":
+            continue
+        q = str(turn.get("content") or "")
+        if _question_matches_topic(q, anchor):
+            anchor_topic_questions += 1
+    variant = (anchor_topic_questions + len(anchor)) % 4
+    templates: dict[str, list[str]] = {
+        "hands_on_implementation": [
+            f"In {anchor}, which exact technologies and tools did you use, and why were they a better fit than alternatives?",
+            f"For {anchor}, what was your implementation sequence from setup to deployment, and what tooling was critical?",
+            f"Which integration point in {anchor} was hardest technically, and what concrete implementation choice solved it?",
+            f"If you rebuilt {anchor} today, which tooling choice would you keep and which would you replace first?",
+        ],
+        "debugging_root_cause": [
+            f"On {anchor}, what exact signal first indicated root cause, and how did you validate the fix end-to-end?",
+            f"For {anchor}, which logs or traces narrowed the failure path, and what changed after your patch?",
+            f"Walk me through your debugging timeline for {anchor}: hypothesis, test, fix, and verification evidence.",
+            f"What was the hardest false lead while debugging {anchor}, and how did you rule it out technically?",
+        ],
+        "performance_tradeoffs": [
+            f"In {anchor}, what trade-off did you choose, what metric moved, and what cost did you accept?",
+            f"For {anchor}, which optimization gave the highest impact, and what did you intentionally not optimize?",
+            f"How did you measure before/after for {anchor}, and what constraints limited further performance gains?",
+            f"What scaling bottleneck remains in {anchor}, and what is your next technical mitigation plan?",
+        ],
+        "system_design_scale": [
+            f"If {anchor} traffic grows 10x, what breaks first and how would you redesign it step-by-step?",
+            f"For {anchor}, describe the current architecture and the first two changes you would make for reliability.",
+            f"Which failure mode in {anchor} worries you most in production, and what guardrail would you add?",
+            f"How would you partition responsibilities in {anchor} services to reduce coupling under high load?",
+        ],
+        "ownership_communication": [
+            f"In {anchor}, what key decision did you personally own, and how did you align the team on it?",
+            f"When {anchor} failed, how did you communicate risk and recovery plan to stakeholders?",
+            f"What conflict or disagreement happened around {anchor}, and how did you resolve it with technical evidence?",
+            f"For {anchor}, what would your incident postmortem include as the top three corrective actions?",
+        ],
+        "stress_under_constraints": [
+            f"Under deadline pressure in {anchor}, what did you cut, what did you protect, and why?",
+            f"If {anchor} breaks during release, what is your rollback and stabilization playbook?",
+            f"For {anchor}, how would you prioritize fixes if you only had 60 minutes before customer impact escalates?",
+            f"What was your highest-risk call in {anchor}, and what data justified that decision?",
+        ],
+    }
+    axis_to_competency = {
+        "tooling": "hands_on_implementation",
+        "tradeoff": "performance_tradeoffs",
+        "failure_mode": "stress_under_constraints",
+        "scale_design": "system_design_scale",
+        "metrics": "performance_tradeoffs",
+        "ownership": "ownership_communication",
+        "steps_debug": "debugging_root_cause",
+    }
+    selected_competency = axis_to_competency.get(axis_hint, target_competency)
+    pool = templates.get(selected_competency) or templates.get(target_competency) or templates["ownership_communication"]
+    return pool[variant]
+
+
+def _is_generic_or_repetitive_prompt(question: str, cleaned_history: list[dict]) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return True
+    banned = (
+        "good start",
+        "thanks, stay on this same question",
+        "let's complete this answer properly",
+        "please include",
+        "before we move on, please finish",
+    )
+    if any(b in q for b in banned):
+        return True
+    assistant_questions = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"]
+    for prev in assistant_questions[-4:]:
+        if _jaccard_similarity(prev, question) >= 0.58:
+            return True
+    return False
+
+
+def _is_low_signal_question(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return True
+    if len(re.findall(r"\b\w+\b", q)) < 10:
+        return True
+    high_signal_markers = (
+        "step",
+        "trade-off",
+        "tradeoff",
+        "why",
+        "measure",
+        "metric",
+        "debug",
+        "root cause",
+        "failure",
+        "scale",
+        "decision",
+        "validate",
+        "constraint",
+    )
+    return not any(m in q for m in high_signal_markers)
+
+
+def _opening_signature(question: str) -> str:
+    words = re.findall(r"[A-Za-z0-9+#./-]+", (question or "").lower())
+    if not words:
+        return ""
+    return " ".join(words[:5])
+
+
+def _is_opening_repetitive(question: str, assistant_questions: list[str]) -> bool:
+    sig = _opening_signature(question)
+    if not sig:
+        return False
+    recent_sigs = [_opening_signature(q) for q in assistant_questions[-4:]]
+    return recent_sigs.count(sig) >= 1
+
+
+def _question_axis(question: str) -> str:
+    q = (question or "").lower()
+    if any(k in q for k in ("trade-off", "tradeoff", "cost", "chose", "decision")):
+        return "tradeoff"
+    if any(k in q for k in ("metric", "measure", "measurable", "improve", "latency", "throughput", "%")):
+        return "metrics"
+    if any(k in q for k in ("failure", "incident", "rollback", "risk", "breaks first", "guardrail")):
+        return "failure_mode"
+    if any(k in q for k in ("scale", "10x", "architecture", "redesign", "partition")):
+        return "scale_design"
+    if any(k in q for k in ("tool", "technology", "stack", "library", "framework")):
+        return "tooling"
+    if any(k in q for k in ("stakeholder", "team", "communicate", "align", "ownership")):
+        return "ownership"
+    if any(k in q for k in ("step", "walk me through", "timeline", "exactly did you do", "debug")):
+        return "steps_debug"
+    return "general"
+
+
+def _is_axis_repetitive(question: str, cleaned_history: list[dict]) -> bool:
+    axis = _question_axis(question)
+    if axis == "general":
+        return False
+    recent_assistant = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"][-3:]
+    if len(recent_assistant) < 2:
+        return False
+    recent_axes = [_question_axis(q) for q in recent_assistant]
+    # If same axis is already used repeatedly in recent prompts, force diversity.
+    return recent_axes.count(axis) >= 2
+
+
+def _is_probe_like_question(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+    probe_markers = (
+        "before we move on",
+        "can you answer with",
+        "include the exact steps",
+        "include the measurable result",
+        "finish the same answer",
+        "same question",
+        "ownership and the final outcome",
+    )
+    return any(m in q for m in probe_markers)
+
+
+def _recent_probe_streak(cleaned_history: list[dict]) -> int:
+    streak = 0
+    for turn in reversed(cleaned_history):
+        if turn.get("role") != "assistant":
+            continue
+        content = str(turn.get("content") or "").strip()
+        if _is_probe_like_question(content):
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _next_axis_hint(cleaned_history: list[dict]) -> str:
+    recent_assistant = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"][-4:]
+    recent_axes = {_question_axis(q) for q in recent_assistant}
+    priority = ["tooling", "tradeoff", "failure_mode", "scale_design", "metrics", "ownership", "steps_debug"]
+    for axis in priority:
+        if axis not in recent_axes:
+            return axis
+    return "tradeoff"
+
+
+def _next_axis_hint_for_topic(cleaned_history: list[dict], topic_anchor: str) -> str:
+    if not topic_anchor:
+        return _next_axis_hint(cleaned_history)
+    topic_recent: list[str] = []
+    for turn in cleaned_history:
+        if turn.get("role") != "assistant":
+            continue
+        q = str(turn.get("content") or "")
+        if _question_matches_topic(q, topic_anchor):
+            topic_recent.append(q)
+    recent_axes = {_question_axis(q) for q in topic_recent[-5:]}
+    priority = ["tooling", "steps_debug", "tradeoff", "failure_mode", "scale_design", "metrics", "ownership"]
+    for axis in priority:
+        if axis not in recent_axes:
+            return axis
+    return "tradeoff"
+
+
+def _topic_tokens(topic: str) -> set[str]:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#./-]{2,}", (topic or "").lower())
+    stop = {
+        "project",
+        "system",
+        "role",
+        "engineering",
+        "engineer",
+        "implementation",
+        "details",
+        "experience",
+        "technical",
+        "technology",
+    }
+    return {t for t in tokens if t not in stop}
+
+
+def _build_topic_catalog(parsed_sections: dict, role_title: str, cleaned_history: list[dict]) -> list[str]:
+    topics: list[str] = []
+    blocked_dynamic_topics = {
+        "built",
+        "build",
+        "used",
+        "using",
+        "chose",
+        "choose",
+        "debugged",
+        "improved",
+        "issue",
+        "result",
+        "system",
+        "project",
+        "backend",
+        "frontend",
+        "implemented",
+        "implementation",
+        "measured",
+        "measure",
+        "metric",
+        "metrics",
+        "logs",
+        "log",
+    }
+
+    def _push(topic: str) -> None:
+        val = (topic or "").strip()
+        if not val:
+            return
+        if val.lower() not in {t.lower() for t in topics}:
+            topics.append(val)
+
+    projects = parsed_sections.get("projects") if isinstance(parsed_sections, dict) else []
+    if isinstance(projects, list):
+        for project in projects[:8]:
+            if isinstance(project, dict):
+                _push(str(project.get("title") or ""))
+
+    skills = parsed_sections.get("skills") if isinstance(parsed_sections, dict) else []
+    if isinstance(skills, list):
+        for skill in skills[:10]:
+            _push(str(skill))
+
+    if role_title.strip():
+        _push(role_title.strip())
+
+    candidate_turns = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "candidate"][-4:]
+    for answer in candidate_turns:
+        for kw in _extract_keywords(answer, limit=2):
+            if kw.lower() in blocked_dynamic_topics:
+                continue
+            _push(kw)
+
+    return topics[:12]
+
+
+def _question_topic_anchor(question: str, topic_catalog: list[str]) -> str:
+    if not question or not topic_catalog:
+        return ""
+    q_tokens = _topic_tokens(question)
+    q_low = question.lower()
+    best_topic = ""
+    best_score = 0.0
+    for topic in topic_catalog:
+        t_tokens = _topic_tokens(topic)
+        if not t_tokens:
+            continue
+        overlap = len(q_tokens.intersection(t_tokens))
+        contains = 1.0 if topic.lower() in q_low else 0.0
+        score = overlap + contains
+        if score > best_score:
+            best_score = score
+            best_topic = topic
+    if best_score <= 0:
+        return ""
+    return best_topic
+
+
+def _question_matches_topic(question: str, topic_anchor: str) -> bool:
+    if not question or not topic_anchor:
+        return False
+    q_tokens = _topic_tokens(question)
+    t_tokens = _topic_tokens(topic_anchor)
+    if not q_tokens or not t_tokens:
+        return False
+    overlap = len(q_tokens.intersection(t_tokens))
+    return overlap >= 1 or topic_anchor.lower() in question.lower()
+
+
+def _next_topic_anchor(topic_catalog: list[str], current_anchor: str) -> str:
+    if not topic_catalog:
+        return current_anchor
+    if current_anchor and current_anchor in topic_catalog and len(topic_catalog) > 1:
+        idx = topic_catalog.index(current_anchor)
+        return topic_catalog[(idx + 1) % len(topic_catalog)]
+    for topic in topic_catalog:
+        if topic != current_anchor:
+            return topic
+    return current_anchor or topic_catalog[0]
+
+
+def _build_topic_plan(cleaned_history: list[dict], parsed_sections: dict, role_title: str) -> dict:
+    topic_catalog = _build_topic_catalog(parsed_sections, role_title, cleaned_history)
+    assistant_questions = [str(t.get("content") or "") for t in cleaned_history if t.get("role") == "assistant"]
+    anchored_history = [_question_topic_anchor(q, topic_catalog) for q in assistant_questions]
+    current_anchor = ""
+    for anchor in reversed(anchored_history):
+        if anchor:
+            current_anchor = anchor
+            break
+    if not current_anchor and topic_catalog:
+        current_anchor = topic_catalog[0]
+
+    streak = 0
+    if current_anchor:
+        for anchor in reversed(anchored_history):
+            if not anchor:
+                break
+            if anchor == current_anchor:
+                streak += 1
+                continue
+            break
+
+    target_anchor = current_anchor
+    if current_anchor and streak >= TOPIC_MAX_QUESTIONS:
+        target_anchor = _next_topic_anchor(topic_catalog, current_anchor)
+    elif not current_anchor and topic_catalog:
+        target_anchor = topic_catalog[0]
+
+    must_stay = bool(current_anchor and streak < TOPIC_MIN_QUESTIONS)
+    should_switch = bool(current_anchor and streak >= TOPIC_MAX_QUESTIONS and target_anchor != current_anchor)
+    enforce_anchor = bool(target_anchor)
+    next_axis_hint = _next_axis_hint_for_topic(cleaned_history, target_anchor)
+    return {
+        "topic_catalog": topic_catalog[:8],
+        "current_anchor": current_anchor,
+        "target_anchor": target_anchor,
+        "topic_streak": streak,
+        "min_topic_questions": TOPIC_MIN_QUESTIONS,
+        "max_topic_questions": TOPIC_MAX_QUESTIONS,
+        "must_stay_on_current_topic": must_stay,
+        "should_switch_topic_now": should_switch,
+        "enforce_anchor": enforce_anchor,
+        "next_axis_hint": next_axis_hint,
+    }
 
 
 def generate_interview_question(
@@ -996,6 +1460,7 @@ def generate_interview_question(
 
     parsed_sections = _extract_parsed_sections(parsed_resume_json)
     target_competency = _determine_target_competency(cleaned_history)
+    topic_plan = _build_topic_plan(cleaned_history, parsed_sections, role_title)
     _ = [b["question"] for b in human_question_bank if b.get("type") == "main" and b.get("question")]
 
     last_candidate_turn = None
@@ -1003,6 +1468,9 @@ def generate_interview_question(
         if turn.get("role") == "candidate":
             last_candidate_turn = str(turn.get("content", "")).strip()
             break
+    last_assistant_question = _last_turn_by_role(cleaned_history, "assistant")
+    probe_streak = _recent_probe_streak(cleaned_history)
+    allow_strict_probe = probe_streak < 1
 
     if last_candidate_turn and _is_repeat_request(last_candidate_turn):
         last_assistant_question = ""
@@ -1023,8 +1491,7 @@ def generate_interview_question(
                     pass
             return f"Sure, let me repeat that: {last_assistant_question}", "source=repeat_guard state=hold fallback=local"
 
-    if last_candidate_turn and _is_incomplete_answer(last_candidate_turn):
-        last_assistant_question = _last_turn_by_role(cleaned_history, "assistant")
+    if last_candidate_turn and _is_incomplete_answer(last_candidate_turn) and allow_strict_probe:
         if use_ai:
             try:
                 probe_q, probe_meta = _generate_ai_incomplete_probe(
@@ -1033,24 +1500,37 @@ def generate_interview_question(
                     last_candidate_turn=last_candidate_turn,
                     role_title=role_title,
                 )
-                return probe_q, f"source=incomplete_answer_guard state=hold {probe_meta}"
+                refined_probe = _postprocess_question(
+                    probe_q,
+                    cleaned_history,
+                    parsed_sections,
+                    target_competency,
+                    role_title,
+                    topic_plan,
+                )
+                return refined_probe, f"source=incomplete_answer_guard state=hold {probe_meta}"
             except Exception:
                 pass
         kws = _extract_keywords(last_candidate_turn, limit=2)
         if kws:
-            return (
+            local_q = (
                 f"Thanks. Could you go deeper on {kws[0]}"
                 + (f" and {kws[1]}" if len(kws) > 1 else "")
-                + " with your exact steps, your ownership, and the final outcome?",
-                "source=incomplete_answer_guard state=hold fallback=local",
+                + " with your exact steps, your ownership, and the final outcome?"
             )
-        return (
-            "Thanks. Could you expand on that with one concrete example, your exact steps, and the result?",
-            "source=incomplete_answer_guard state=hold fallback=local",
-        )
+        else:
+            local_q = _beast_followup_question(
+                cleaned_history=cleaned_history,
+                role_title=role_title,
+                target_competency=target_competency,
+                last_question=last_assistant_question,
+                last_answer=last_candidate_turn,
+                anchor_override=str(topic_plan.get("target_anchor") or ""),
+            )
+        refined_local_q = _postprocess_question(local_q, cleaned_history, parsed_sections, target_competency, role_title, topic_plan)
+        return refined_local_q, "source=incomplete_answer_guard state=hold fallback=local"
 
-    last_assistant_question = _last_turn_by_role(cleaned_history, "assistant")
-    if last_candidate_turn and last_assistant_question and _is_off_topic_answer(last_assistant_question, last_candidate_turn):
+    if last_candidate_turn and last_assistant_question and _is_off_topic_answer(last_assistant_question, last_candidate_turn) and allow_strict_probe:
         kws = _extract_keywords(last_assistant_question, limit=2)
         if use_ai:
             try:
@@ -1060,22 +1540,36 @@ def generate_interview_question(
                     last_candidate_turn=last_candidate_turn,
                     role_title=role_title,
                 )
-                return probe_q, f"source=off_topic_guard state=hold {probe_meta}"
+                refined_probe = _postprocess_question(
+                    probe_q,
+                    cleaned_history,
+                    parsed_sections,
+                    target_competency,
+                    role_title,
+                    topic_plan,
+                )
+                return refined_probe, f"source=off_topic_guard state=hold {probe_meta}"
             except Exception:
                 pass
         if kws:
-            return (
+            local_q = (
                 f"Let's refocus briefly on {kws[0]}"
                 + (f" and {kws[1]}" if len(kws) > 1 else "")
-                + ". What exactly did you do, and what was the measurable outcome?",
-                "source=off_topic_guard state=hold fallback=local",
+                + ". What exactly did you do, and what was the measurable outcome?"
             )
-        return (
-            "Let's stay on this question for a moment. Could you answer it directly with your exact steps and result?",
-            "source=off_topic_guard state=hold fallback=local",
-        )
+        else:
+            local_q = _beast_followup_question(
+                cleaned_history=cleaned_history,
+                role_title=role_title,
+                target_competency=target_competency,
+                last_question=last_assistant_question,
+                last_answer=last_candidate_turn,
+                anchor_override=str(topic_plan.get("target_anchor") or ""),
+            )
+        refined_local_q = _postprocess_question(local_q, cleaned_history, parsed_sections, target_competency, role_title, topic_plan)
+        return refined_local_q, "source=off_topic_guard state=hold fallback=local"
 
-    if last_candidate_turn:
+    if last_candidate_turn and allow_strict_probe:
         signal = _answer_signal(last_candidate_turn)
         if signal["is_vague"] and signal["word_count"] < 28 and last_assistant_question:
             if use_ai:
@@ -1093,18 +1587,21 @@ def generate_interview_question(
                         parsed_sections,
                         target_competency,
                         role_title,
+                        topic_plan,
                     )
                     return refined_precision, f"source=precision_probe state=hold {precision_meta}"
                 except Exception:
                     pass
 
     asked_questions = [t["content"] for t in cleaned_history if t.get("role") == "assistant"]
+    if not asked_questions:
+        topic_plan["enforce_anchor"] = False
     stage = _infer_interview_stage(cleaned_history)
     _ = _sanitize_resume_text(resume_text)
     _ = resume_skills
     elapsed = float(elapsed_minutes or 0.0)
 
-    if last_candidate_turn and last_assistant_question:
+    if last_candidate_turn and last_assistant_question and allow_strict_probe:
         depth = _evaluate_answer_depth(last_candidate_turn)
         if not depth["depth_ok"] and depth["word_count"] >= 8:
             if use_ai:
@@ -1122,11 +1619,21 @@ def generate_interview_question(
                         parsed_sections,
                         target_competency,
                         role_title,
+                        topic_plan,
                     )
                     return refined_probe, f"source=answer_depth_gate state=hold {probe_meta}"
                 except Exception:
                     pass
-            return _build_clarify_prompt(last_assistant_question, last_candidate_turn), "source=answer_depth_gate state=hold fallback=local"
+            local_probe = _build_clarify_prompt(last_assistant_question, last_candidate_turn)
+            refined_local_probe = _postprocess_question(
+                local_probe,
+                cleaned_history,
+                parsed_sections,
+                target_competency,
+                role_title,
+                topic_plan,
+            )
+            return refined_local_probe, "source=answer_depth_gate state=hold fallback=local"
 
     if not asked_questions:
         if use_ai:
@@ -1146,6 +1653,7 @@ def generate_interview_question(
                     parsed_sections,
                     target_competency,
                     role_title,
+                    topic_plan,
                 )
                 return refined_intro, f"source=intro state=interview_start {intro_meta}"
             except Exception:
@@ -1157,6 +1665,7 @@ def generate_interview_question(
             parsed_sections,
             target_competency,
             role_title,
+            topic_plan,
         )
         return refined_intro, "source=intro state=interview_start fallback=local"
 
@@ -1218,6 +1727,7 @@ def generate_interview_question(
                 parsed_sections=parsed_sections,
                 cleaned_history=cleaned_history,
                 target_competency=target_competency,
+                topic_plan=topic_plan,
             )
             refined_next = _postprocess_question(
                 next_q,
@@ -1225,6 +1735,7 @@ def generate_interview_question(
                 parsed_sections,
                 target_competency,
                 role_title,
+                topic_plan,
             )
             return refined_next, f"source=ai_dynamic_next state=live_flow {next_meta}"
         except Exception:
@@ -1237,6 +1748,7 @@ def generate_interview_question(
         parsed_sections,
         target_competency,
         role_title,
+        topic_plan,
     )
     return refined_next, "source=ai_dynamic_next state=live_flow fallback=local"
 

@@ -1581,16 +1581,17 @@ export default function InterviewLauncher({
     const depth = evaluateAnswerDepth(answer, currentQuestion);
     const missing = [...depth.missing].filter((m) => m !== "a bit more detail");
 
+    const softLead =
+      incompleteAnswerCountRef.current >= 1
+        ? "Let's make this high-signal before moving ahead."
+        : "Helpful start.";
+
     if (missing.length === 0) {
-      return "Good start. Please add one concrete example with clear implementation details so I can evaluate better.";
+      return `${softLead} Can you add one concrete incident with exact steps, key decision/trade-off, and measurable outcome?`;
     }
     const missingText =
       missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]}`;
-    const prefix =
-      incompleteAnswerCountRef.current >= 2
-        ? "Let's complete this answer properly before moving on."
-        : "Thanks, stay on this same question.";
-    return `${prefix} Please include ${missingText}.`;
+    return `${softLead} Can you answer the same question with ${missingText}?`;
   }
 
   function isFrustrationReply(text: string): boolean {
@@ -2605,29 +2606,12 @@ export default function InterviewLauncher({
         authenticity: avg("authenticity_score"),
       });
     }
-    if (tooShort) {
-      await speakDepthFollowup(transcript, latestQuestion);
-      return;
-    }
-    if (!answerHasDepth(transcript, latestQuestion)) {
-      const shouldAdvance =
-        (incompleteAnswerCountRef.current >= 2 && depth.words >= 14) ||
-        (frustrated && incompleteAnswerCountRef.current >= 1);
-      if (shouldAdvance) {
-        const ack =
-          "Thanks, understood. I will move ahead and evaluate this response with lower confidence due to limited structure.";
-        setMessage(ack);
-        setHistory((prev) => {
-          const next = [...prev, { role: "assistant" as const, source: "system" as const, content: ack }];
-          historyRef.current = next;
-          return next;
-        });
-        void saveTurn("assistant", ack, "system");
-        speak(ack);
-        incompleteAnswerCountRef.current = 0;
+    if (tooShort || !answerHasDepth(transcript, latestQuestion)) {
+      incompleteAnswerCountRef.current += 1;
+      if (frustrated) {
+        setMessage("Answer captured. Moving forward with deeper follow-up questions.");
       } else {
-        await speakDepthFollowup(transcript, latestQuestion);
-        return;
+        setMessage("Answer captured. The next question will probe deeper technical details.");
       }
     } else {
       incompleteAnswerCountRef.current = 0;
